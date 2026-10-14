@@ -1,0 +1,15 @@
+# 数据与模型（隐私/大文件，不入库）
+data/
+models/
+output/
+venv/
+*.jsonl
+*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统
+Thumbs.db
+.DS_Store
