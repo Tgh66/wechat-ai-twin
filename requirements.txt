@@ -9,6 +9,9 @@ matplotlib
 psutil
 jieba
 
+# 模型下载（国内可用，自动走 ModelScope 镜像）
+modelscope
+
 # 微信数据库读取（自动从微信进程内存提取密钥）
 wechatauto>=1.2.0
 
