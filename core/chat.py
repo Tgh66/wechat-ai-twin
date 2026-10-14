@@ -44,7 +44,7 @@ def load_model(model_dir, device="cuda"):
             model_dir, dtype=torch.bfloat16, trust_remote_code=True, device_map=device)
         model.eval()
         model._loaded_from = model_dir
-        _MODEL, _TOK = model, tokenizer
+        _MODEL, _TOK = model, tok
         return "模型加载成功: %s" % model_dir
 
 
