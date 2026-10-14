@@ -194,16 +194,30 @@ def do_recommend():
 
 def do_download_model(hf_name, progress=gr.Progress()):
     if not hf_name:
-        return "请输入模型名（如 Qwen/Qwen3.5-2B）", ""
+        return "请选择或输入模型名（如 Qwen/Qwen3-4B）", ""
+    # 显示文本 → 模型名映射（预置表 / 自动推荐列表）
+    for hf_id, label in gpu.MODEL_PRESETS:
+        if label == hf_name or hf_name == hf_id:
+            hf_name = hf_id
+            break
+    else:
+        short = hf_name.split("（")[0].strip()
+        hit = [hf_id for hf_id, label in gpu.MODEL_PRESETS if label.split(" · ")[0] == short]
+        hf_name = hit[0] if hit else short
     target = os.path.join(MODELS_DIR, hf_name.replace("/", "_"))
-    progress(0.05, desc="下载 %s …" % hf_name)
+    progress(0.05, desc="下载 %s → %s …" % (hf_name, target))
     try:
-        from transformers import AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(hf_name, trust_remote_code=True)
-        tok.save_pretrained(target)
+        from modelscope import snapshot_download
+        snapshot_download(hf_name, local_dir=target)
     except Exception as e:
-        return "下载失败: %s（请检查网络 / 模型名）" % e, ""
-    return "模型下载成功: %s" % target, target
+        # ModelScope 失败时退回 HuggingFace
+        try:
+            from huggingface_hub import snapshot_download as hf_dl
+            hf_dl(hf_name, local_dir=target)
+        except Exception as e2:
+            return "下载失败: %s（ModelScope / HF 均失败）" % e2, ""
+    progress(1.0, desc="完成")
+    return "模型下载成功: %s（含完整权重，可直接用于训练）" % target, target
 
 
 def _list_merged():
@@ -503,9 +517,11 @@ with gr.Blocks(title="微信 AI 数字分身工作台") as demo:
             btn_rec = gr.Button("自动推荐模型")
         gpu_text = gr.Textbox(label="显卡信息", lines=3)
         with gr.Row():
-            model_choice = gr.Dropdown(label="推荐模型（训练时自动下载到本地 models/ 目录）")
+            model_choice = gr.Dropdown(label="预置模型（ModelScope 下载，适配各档显卡）",
+                                       choices=[m[1] for m in gpu.MODEL_PRESETS],
+                                       value=gpu.MODEL_PRESETS[0][1])
             model_dir = gr.Textbox(label="本地模型目录（可直接填绝对路径，如已下载过）",
-                                   value=os.path.join(MODELS_DIR, "Qwen3.5-2B"))
+                                   value=os.path.join(MODELS_DIR, "Qwen3-4B"))
         with gr.Row():
             btn_dl = gr.Button("⬇ 下载模型到本地")
             dl_result = gr.Textbox(label="下载结果", interactive=False)
@@ -594,7 +610,7 @@ with gr.Blocks(title="微信 AI 数字分身工作台") as demo:
         btn_twin.click(do_sentiment_twin, inputs=[ana_chat], outputs=[twin_result])
         btn_pipe.click(do_sentiment_pipe, inputs=[pipe_model, pipe_text], outputs=[pipe_result])
 
-    gr.Markdown("---\n数据全程本地处理，不上传任何服务器。训练建议：6GB 显存可用 Qwen3.5-2B（bf16 LoRA）。")
+    gr.Markdown("---\n数据全程本地处理，不上传任何服务器。训练建议：6GB 显存可用 Qwen3-4B（QLoRA 4bit，效果明显优于 2B）。")
 
 
 def main():
