@@ -305,7 +305,7 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "meta":
 		writeJSON(map[string]interface{}{
-			"version":   "1.2.0",
+			"version":   "1.2.1",
 			"engine":    "go",
 			"db_exists": GDB.Exists(),
 			"db_count":  GDB.Count(),

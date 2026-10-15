@@ -78,10 +78,17 @@ func LocalModels() []map[string]interface{} {
 						continue
 					}
 					seen[name] = true
+					// P0-7：目录内存在 *.incomplete（下载中断残留）→ 标记 downloading，
+					// 避免残留模型被误判为"已就绪"（model_download.py 校验完成后会清理）
+					state := "ready"
+					if inc, _ := filepath.Glob(filepath.Join(root, e.Name(), "*.incomplete")); len(inc) > 0 {
+						state = "downloading"
+					}
 					out = append(out, map[string]interface{}{
 						"name":    name,
 						"path":    filepath.Join(root, e.Name()),
 						"size_gb": round1(dirSize(filepath.Join(root, e.Name())) / 1e9),
+						"state":   state,
 					})
 				}
 			}
