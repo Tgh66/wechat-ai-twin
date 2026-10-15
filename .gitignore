@@ -9,6 +9,9 @@ venv/
 chats.db*
 wechatauto_logs/
 
+# 离线依赖包（30MB，只随 Release zip 发布，不入 git）
+wheels/
+
 # 构建产物
 *.exe
 *.zip
