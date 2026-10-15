@@ -101,6 +101,12 @@ func dirSize(path string) float64 {
 	return sz
 }
 
+// pyHasModule 检查指定 python 能否 import 某模块
+func pyHasModule(py, mod string) bool {
+	c := exec.Command(py, "-c", "import "+mod)
+	return c.Run() == nil
+}
+
 // 镜像模型目录（ModelScope 可下载；Qwen/DeepSeek/GLM/MiniCPM 系列，按显存分组）
 var catalog = []map[string]interface{}{
 	// —— 核显 / CPU 可跑（int4 量化后 <2GB，无独显也能推理）——
@@ -121,7 +127,7 @@ var catalog = []map[string]interface{}{
 	{"id": "Qwen/Qwen2.5-Coder-3B-Instruct", "name": "Qwen2.5-Coder-3B", "size_gb": 6.2, "tier": "6GB 显卡", "desc": "编程 3B"},
 	{"id": "Qwen/Qwen2-VL-2B-Instruct", "name": "Qwen2-VL-2B", "size_gb": 5.0, "tier": "6GB 显卡", "desc": "视觉语言 2B"},
 	{"id": "Qwen/Qwen2.5-VL-3B-Instruct", "name": "Qwen2.5-VL-3B", "size_gb": 7.0, "tier": "6GB 显卡", "desc": "视觉语言 3B"},
-	{"id": "DeepSeek/DeepSeek-R1-Distill-Qwen-1.5B", "name": "DeepSeek-R1-1.5B", "size_gb": 3.2, "tier": "6GB 显卡", "desc": "推理蒸馏小模型"},
+	{"id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", "name": "DeepSeek-R1-1.5B", "size_gb": 3.2, "tier": "6GB 显卡", "desc": "推理蒸馏小模型"},
 	{"id": "OpenBMB/MiniCPM3-4B", "name": "MiniCPM3-4B", "size_gb": 8.0, "tier": "6GB 显卡", "desc": "国产 4B 强模型"},
 	// —— 12GB 显卡推荐 ——
 	{"id": "Qwen/Qwen3-8B", "name": "Qwen3-8B", "size_gb": 16.0, "tier": "12GB+ 显卡", "desc": "更强，需大显存"},
@@ -132,7 +138,7 @@ var catalog = []map[string]interface{}{
 	{"id": "Qwen/Qwen2.5-VL-7B-Instruct", "name": "Qwen2.5-VL-7B", "size_gb": 19.0, "tier": "12GB+ 显卡", "desc": "视觉语言 7B 新版"},
 	{"id": "Qwen/Qwen2-7B-Instruct", "name": "Qwen2-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "Qwen2 7B"},
 	{"id": "Qwen/Qwen1.5-7B-Chat", "name": "Qwen1.5-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "Qwen1.5 7B"},
-	{"id": "DeepSeek/DeepSeek-R1-Distill-Qwen-7B", "name": "DeepSeek-R1-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "推理蒸馏 7B"},
+	{"id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", "name": "DeepSeek-R1-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "推理蒸馏 7B"},
 	{"id": "ZhipuAI/chatglm3-6b", "name": "ChatGLM3-6B", "size_gb": 12.5, "tier": "12GB+ 显卡", "desc": "智谱 GLM3"},
 	{"id": "ZhipuAI/glm-4-9b-chat", "name": "GLM-4-9B", "size_gb": 18.0, "tier": "12GB+ 显卡", "desc": "智谱 GLM4"},
 	{"id": "OpenBMB/MiniCPM-V-2_6", "name": "MiniCPM-V-2.6", "size_gb": 16.0, "tier": "12GB+ 显卡", "desc": "多模态 8B"},
@@ -140,7 +146,7 @@ var catalog = []map[string]interface{}{
 	{"id": "Qwen/Qwen2.5-14B-Instruct", "name": "Qwen2.5-14B", "size_gb": 29.0, "tier": "16GB+ 显卡", "desc": "2.5 系 14B"},
 	{"id": "Qwen/Qwen3-14B", "name": "Qwen3-14B", "size_gb": 28.0, "tier": "16GB+ 显卡", "desc": "Qwen3 14B"},
 	{"id": "Qwen/Qwen2.5-Coder-14B-Instruct", "name": "Qwen2.5-Coder-14B", "size_gb": 29.0, "tier": "16GB+ 显卡", "desc": "编程 14B"},
-	{"id": "DeepSeek/DeepSeek-R1-Distill-Qwen-14B", "name": "DeepSeek-R1-14B", "size_gb": 29.0, "tier": "16GB+ 显卡", "desc": "推理蒸馏 14B"},
+	{"id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", "name": "DeepSeek-R1-14B", "size_gb": 29.0, "tier": "16GB+ 显卡", "desc": "推理蒸馏 14B"},
 	// —— 24GB+ 显卡 ——
 	{"id": "Qwen/Qwen3-30B-A3B", "name": "Qwen3-30B-A3B", "size_gb": 18.5, "tier": "24GB+ 显卡", "desc": "MoE 激活 3B，速度快"},
 	{"id": "Qwen/Qwen3-32B", "name": "Qwen3-32B", "size_gb": 65.0, "tier": "24GB+ 显卡", "desc": "Qwen3 32B 满血"},
@@ -381,26 +387,62 @@ func ModelDownload(modelID string) error {
 		j.mu.Unlock()
 		return fmtErr("训练/下载任务进行中，请稍后再试")
 	}
+	j.Running = true
+	j.Stage = "检查下载环境…"
+	j.DLSize = 0
+	j.DLSpeed = 0
+	j.DLTotal = 0
 	j.mu.Unlock()
+
+	// 确保 modelscope 可用（缺则自动安装）
+	if !pyHasModule(pyExe, "modelscope") {
+		j.mu.Lock()
+		j.Stage = "安装 modelscope（下载工具）…"
+		j.mu.Unlock()
+		installed := false
+		for _, mirror := range []string{"https://pypi.tuna.tsinghua.edu.cn/simple", ""} {
+			args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check"}
+			if mirror != "" {
+				args = append(args, "-i", mirror)
+			}
+			args = append(args, "modelscope")
+			c := exec.Command(pyExe, args...)
+			if c.Run() == nil && pyHasModule(pyExe, "modelscope") {
+				installed = true
+				break
+			}
+		}
+		if !installed {
+			j.mu.Lock()
+			j.Running = false
+			j.Stage = "安装 modelscope 失败（网络受限？）"
+			j.mu.Unlock()
+			return fmtErr("自动安装 modelscope 失败（网络受限？）。可手动执行：" + pyExe + " -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple modelscope")
+		}
+	}
 
 	logFile := filepath.Join(dataDir, "model_dl.log")
 	os.Remove(logFile)
+	f, err := os.Create(logFile)
+	if err != nil {
+		j.mu.Lock()
+		j.Running = false
+		j.mu.Unlock()
+		return err
+	}
 	name := modelID
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		name = name[i+1:]
 	}
 	target := filepath.Join(modelDir, name)
-	dl := exec.Command(pyExe, "-c",
-		"import sys; sys.stdout.reconfigure(encoding='utf-8', errors='replace');"+
-			"from modelscope import snapshot_download; import os,time;"+
-			"T=r'"+modelDir+"';"+
-			"mid='"+modelID+"'; name=mid.split('/')[-1]; target=os.path.join(T,name); os.makedirs(target, exist_ok=True);"+
-			"try:\n from modelscope.hub.api import HubApi\n api=HubApi(); fl=api.get_model_files(mid)\n tot=sum((f.size if hasattr(f,'size') else 0) for f in fl)\n print('[DLTOTAL] %d' % tot, flush=True)\n except Exception:\n print('[DLTOTAL] 0', flush=True);"+
-			"print('[DL] start '+mid, flush=True);"+
-			"snapshot_download(mid, local_dir=target);"+
-			"print('[DL] done', flush=True)")
+	dl := exec.Command(pyExe, filepath.Join(wd, "scripts", "model_download.py"), modelID, target)
 	dl.Dir = wd
+	dl.Stdout = f
+	dl.Stderr = f
 	if err := dl.Start(); err != nil {
+		j.mu.Lock()
+		j.Running = false
+		j.mu.Unlock()
 		return err
 	}
 	j.mu.Lock()
@@ -414,10 +456,15 @@ func ModelDownload(modelID string) error {
 	j.proc = dl
 	j.mu.Unlock()
 	go func() {
-		dl.Wait()
+		err := dl.Wait()
+		f.Close()
 		j.mu.Lock()
 		j.Running = false
-		j.Stage = "下载完成"
+		if err != nil || dirSize(target) < 1e6 {
+			j.Stage = "下载失败（详见日志/模型目录）"
+		} else {
+			j.Stage = "下载完成"
+		}
 		j.DLSpeed = 0
 		j.mu.Unlock()
 	}()
