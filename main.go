@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -236,23 +237,28 @@ func autoLoadData() {
 		}
 		// 2) 自动搜索微信目录（注册表/默认/各盘 xwechat_files）
 		log.Println("data/ 下未发现导出，自动搜索微信目录…")
-		dirs := DiscoverWeChatDirs()
-		if len(dirs) > 0 {
-			log.Println("发现微信目录:", dirs[0])
+		res := DiscoverWeChatDirs()
+		if dirs, ok := res["dirs"].([]WeChatDir); ok && len(dirs) > 0 {
+			log.Printf("发现 %d 个微信数据目录，首选: %s（%s，%d 个账号）",
+				len(dirs), dirs[0].Path, dirs[0].Format, dirs[0].Accounts)
 		}
 	})
 }
 
 func findJSONL() string {
-	files, _ := filepath.Glob(filepath.Join(dataDir, "*.jsonl"))
-	if len(files) == 0 {
-		return ""
+	// 依次在 exe 同级 data/ 与 上级 ai-twin/data/ 中查找最大的 JSONL 导出
+	var roots []string
+	roots = append(roots, filepath.Join(dataDir, "*.jsonl"))
+	if sibling := filepath.Join(wd, "..", "ai-twin", "data", "*.jsonl"); sibling != filepath.Join(dataDir, "*.jsonl") {
+		roots = append(roots, sibling)
 	}
-	// 取最大的
 	best, bestSize := "", int64(0)
-	for _, f := range files {
-		if st, err := os.Stat(f); err == nil && st.Size() > bestSize {
-			best, bestSize = f, st.Size()
+	for _, pat := range roots {
+		files, _ := filepath.Glob(pat)
+		for _, f := range files {
+			if st, err := os.Stat(f); err == nil && st.Size() > bestSize {
+				best, bestSize = f, st.Size()
+			}
 		}
 	}
 	return best
@@ -285,8 +291,7 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			"model_dir": modelDir,
 		})
 	case path == "discover":
-		dirs := DiscoverWeChatDirs()
-		writeJSON(map[string]interface{}{"dirs": dirs})
+		writeJSON(DiscoverWeChatDirs())
 	case path == "import":
 		p := q.Get("path")
 		if p == "" {
@@ -348,9 +353,92 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(map[string]interface{}{"jsonl": files})
 	case path == "twin":
 		handleTwin(w, r)
+	case path == "gpu":
+		writeJSON(GPUStatus())
+	case path == "models":
+		writeJSON(map[string]interface{}{"local": LocalModels(), "catalog": catalog})
+	case path == "train_status":
+		writeJSON(trainJob.RunningState())
+	case path == "train_log":
+		writeJSON(map[string]interface{}{"log": tailFile(trainJob.LogFile, 4000)})
+	case path == "train_start":
+		chat := q.Get("chat")
+		persona := q.Get("persona")
+		model := q.Get("model")
+		out := q.Get("out")
+		epochs := atoiOr(q.Get("epochs"), 2)
+		samples := atoiOr(q.Get("samples"), 15000)
+		lr := 2e-4
+		if v, err := strconv.ParseFloat(q.Get("lr"), 64); err == nil {
+			lr = v
+		}
+		port := atoiOr(q.Get("port"), 5000)
+		if chat == "" || model == "" {
+			writeErr("缺少 chat/model 参数", 400)
+			return
+		}
+		if out == "" {
+			personaName := "me"
+			if persona == "other" {
+				personaName = "other"
+			}
+			out = filepath.Join(modelDir, chat+"-"+personaName+"-merged")
+		}
+		res, err := TrainStart(chat, persona, model, out, epochs, samples, lr, port)
+		if err != nil {
+			writeJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(res)
+	case path == "train_stop":
+		TrainStop()
+		writeJSON(map[string]interface{}{"ok": true})
+	case path == "serve_status":
+		writeJSON(map[string]interface{}{"online": ServeStatus(5000), "port": 5000})
+	case path == "model_download":
+		mid := q.Get("id")
+		if mid == "" {
+			writeErr("缺少 id 参数", 400)
+			return
+		}
+		if err := ModelDownload(mid); err != nil {
+			writeJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(map[string]interface{}{"ok": true, "msg": "后台下载中…"})
 	default:
 		writeErr("not found: "+path, 404)
 	}
+}
+
+func atoiOr(s string, def int) int {
+	if v, err := strconv.Atoi(s); err == nil {
+		return v
+	}
+	return def
+}
+
+// tailFile 读取文件末尾 n 字节
+func tailFile(path string, n int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	size := st.Size()
+	start := size - int64(n)
+	if start < 0 {
+		start = 0
+	}
+	buf := make([]byte, size-start)
+	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+		return ""
+	}
+	return string(buf)
 }
 
 // handleTwin 转发对话请求到 Python 推理服务（数字分身）

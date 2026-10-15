@@ -62,6 +62,24 @@ body{background:var(--bg);color:var(--tx);font-family:"Segoe UI","Microsoft YaHe
 /* 进度条 */
 .progress{height:6px;background:var(--card2);border-radius:3px;overflow:hidden;width:240px}
 .progress i{display:block;height:100%;width:0;background:var(--acc);transition:width .3s}
+/* 微信目录发现弹层 */
+#discoverModal{position:fixed;inset:0;background:rgba(15,20,32,.85);display:none;align-items:center;justify-content:center;z-index:100}
+#discoverModal.show{display:flex}
+#discoverModal .box{background:var(--card);border:1px solid var(--line);border-radius:14px;width:min(780px,94vw);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+#discoverModal .hd{padding:15px 20px;border-bottom:1px solid var(--line);font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+#discoverModal .hd button{background:none;border:none;color:var(--tx2);font-size:18px;cursor:pointer;line-height:1;padding:0 4px}
+#discoverModal .bd{padding:14px 20px;overflow-y:auto;flex:1}
+.dc-item{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.dc-item .r1{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dc-badge{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:600;white-space:nowrap}
+.dc-badge.new{background:rgba(61,132,255,.18);color:#6ab0ff}
+.dc-badge.old{background:rgba(255,190,61,.16);color:#ffc45e}
+.dc-badge.jsonl{background:rgba(61,220,132,.16);color:var(--ok)}
+.dc-path{font-size:13px;font-weight:600;word-break:break-all}
+.dc-meta{font-size:11px;color:var(--tx2);margin-top:5px;word-break:break-all;line-height:1.6}
+.dc-acts{margin-top:9px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.dc-acts .btn{padding:5px 13px;font-size:12px}
+.dc-none{font-size:11px;color:var(--tx2)}
 /* 搜索 */
 .searchbar{display:flex;gap:10px;margin-bottom:14px}
 .searchbar input{flex:1;background:var(--card);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px 14px;font-size:13px;outline:none}
@@ -117,6 +135,7 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
       <div class="tab" data-p="records" onclick="switchTab('records')">记录分析</div>
       <div class="tab" data-p="duo" onclick="switchTab('duo')">双人报告</div>
       <div class="tab" data-p="twin" onclick="switchTab('twin')">数字分身</div>
+      <div class="tab" data-p="train" onclick="switchTab('train')">训练</div>
     </div>
     <div class="content">
       <!-- 总览 -->
@@ -188,11 +207,80 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
           </div>
         </div>
       </div>
+      <!-- 训练 -->
+      <div class="page" id="p-train">
+        <div class="cards" id="trainGpu"></div>
+        <div class="grid">
+          <div class="chartbox">
+            <h3>① 选择目标会话（训练谁的数字分身）</h3>
+            <div style="display:flex;gap:10px;margin-bottom:10px">
+              <select id="trChat" style="flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px;font-size:13px"></select>
+            </div>
+            <div style="display:flex;gap:10px">
+              <label style="flex:1;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+                <input type="radio" name="persona" value="me" checked onchange="trainExplain()"> 🧑 训练“我”的分身（模仿我的说话方式）
+              </label>
+              <label style="flex:1;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+                <input type="radio" name="persona" value="other" onchange="trainExplain()"> 👤 训练对方的分身（如：爱妻顺遂的说话风格）
+              </label>
+            </div>
+            <div id="trainExplain" style="margin-top:10px;font-size:12px;color:var(--tx2)"></div>
+          </div>
+          <div class="chartbox">
+            <h3>② 选择基础模型</h3>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <select id="trModel" style="flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px;font-size:13px">
+                <option value="">— 加载中 —</option>
+              </select>
+              <button class="btn" style="background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:0 14px;cursor:pointer;font-size:12px" onclick="dlModel()">下载选中</button>
+            </div>
+            <div style="display:flex;gap:8px">
+              <input id="trModelPath" placeholder="或手动导入本地模型路径（含 config.json 的目录）" style="flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px;font-size:12px">
+            </div>
+            <div id="modelHint" style="margin-top:8px;font-size:11px;color:var(--tx2)"></div>
+          </div>
+          <div class="chartbox">
+            <h3>③ 训练参数</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">
+              <label style="color:var(--tx2)">epochs<input id="trEpochs" type="number" value="2" min="1" max="5" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)">样本数（上限）<input id="trSamples" type="number" value="15000" min="500" max="60000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)">学习率<input id="trLr" type="text" value="0.0002" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)">推理端口<input id="trPort" type="number" value="5000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+            </div>
+          </div>
+          <div class="chartbox">
+            <h3>④ 开始训练</h3>
+            <div style="display:flex;gap:10px;margin-bottom:12px">
+              <button id="trStartBtn" style="flex:1;background:var(--acc);border:none;color:#fff;border-radius:8px;padding:12px;font-size:14px;cursor:pointer" onclick="startTrain()">🚀 开始训练</button>
+              <button style="flex:1;background:var(--card2);border:1px solid var(--err);color:var(--err);border-radius:8px;padding:12px;font-size:14px;cursor:pointer" onclick="stopTrain()">⏹ 停止</button>
+            </div>
+            <div style="font-size:12px;color:var(--tx2);line-height:1.7">
+              <div>当前任务：<span id="trJobDesc">无</span></div>
+              <div style="margin-top:8px">推理服务：<span id="trServe">检测中…</span></div>
+            </div>
+          </div>
+          <div class="chartbox full">
+            <h3>训练进度</h3>
+            <div style="display:flex;align-items:center;gap:14px">
+              <span id="trStage" style="font-size:13px;color:var(--acc);min-width:120px">空闲</span>
+              <div style="flex:1;height:10px;background:var(--card2);border-radius:5px;overflow:hidden"><i id="trBar" style="display:block;height:100%;width:0;background:linear-gradient(90deg,#4f8cff,#7c5cff);transition:width .5s"></i></div>
+              <span id="trPct" style="font-size:12px;color:var(--tx2);min-width:70px;text-align:right">0%</span>
+            </div>
+            <div style="margin-top:8px;font-size:12px;color:var(--tx2)" id="trInfo"></div>
+            <div style="margin-top:10px;font-size:11px;color:var(--tx2);font-family:monospace;white-space:pre-wrap;max-height:150px;overflow-y:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px" id="trLog">（训练日志将在此显示）</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
 <div id="loading"><div class="spinner"></div><div class="t" id="loadingText">加载中…</div><div class="progress"><i id="loadingBar"></i></div></div>
+
+<div id="discoverModal"><div class="box">
+  <div class="hd"><span>🔎 微信数据目录 / 聊天记录</span><button onclick="closeDiscover()" title="关闭">✕</button></div>
+  <div class="bd" id="discoverList"></div>
+</div></div>
 
 <script>
 // ---------------- 状态 ----------------
@@ -481,28 +569,175 @@ function showImport(){
   });
 }
 async function discover(){
-  loading(true, '正在自动搜索微信目录…');
+  loading(true, '正在全盘扫描微信目录…');
   const d = await api('discover');
   loading(false);
-  if(d.dirs && d.dirs.length){
-    const idx = prompt('发现微信数据目录，选择或输入 jsonl 路径：\n\n' + d.dirs.map((x,i)=>(i+1)+'. '+x).join('\n') + '\n\n请输入数字或完整路径');
-    if(!idx) return;
-    let p = idx;
-    if(/^\d+$/.test(idx)){ p = d.dirs[parseInt(idx)-1]; }
-    showImportPath(p);
-  } else {
-    alert('未自动发现微信目录，请手动选择。\n微信新版记录一般在：文档\\xwechat_files\\...\n其中 .jsonl 文件可被直接导入。');
-  }
+  renderDiscover(d.dirs || [], d.jsonl || []);
 }
-async function showImportPath(p){
-  // 目录则找 jsonl
-  if(!/\.jsonl$/i.test(p)){
-    loading(true, '扫描目录查找聊天导出…');
-    const d = await api('import_scan', {path: p}).catch(()=>({}));
-    loading(false);
+function openDiscover(){ $('discoverModal').classList.add('show'); }
+function closeDiscover(){ $('discoverModal').classList.remove('show'); }
+function renderDiscover(dirs, jsonlFiles){
+  const bd = $('discoverList');
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const q = s => esc(s).replace(/'/g,"\\'");
+  if(!dirs.length && !jsonlFiles.length){
+    bd.innerHTML = '<div style="color:var(--tx2);padding:24px;text-align:center">未发现微信数据目录。<br>请确认微信聊天记录在本机（含迁移到其他盘符的情况），或点下方「📥 导入记录」手动输入 JSONL 路径。</div>';
+    openDiscover();
+    return;
   }
-  showImport();
+  let html = '';
+  for(const d of dirs){
+    const badge = d.format==='new' ? '<span class="dc-badge new">微信 4.0 新版</span>' : '<span class="dc-badge old">微信旧版</span>';
+    const acts = [];
+    if(d.jsonl && d.jsonl.length){
+      for(const j of d.jsonl.slice(0,4)){
+        acts.push(`<button class="btn" onclick="importPath('${q(j)}')">导入 ${esc(j.split(/[\\/]/).pop())}</button>`);
+      }
+      if(d.jsonl.length>4) acts.push(`<span class="dc-none">…共 ${d.jsonl.length} 个 JSONL</span>`);
+    } else {
+      acts.push('<span class="dc-none">目录内未发现 JSONL 导出（微信数据库为加密格式，可直接导入下方已导出的 JSONL 数据）</span>');
+    }
+    const accts = (d.accounts_list||[]).slice(0,6).join('、');
+    html += `<div class="dc-item"><div class="r1">${badge}<span class="dc-path">${esc(d.path)}</span></div>
+      <div class="dc-meta">账号 ${d.accounts} 个：${esc(accts)}${(d.accounts||0)>6?' 等':''} · 最近更新 ${esc(d.updated||'-')}</div>
+      <div class="dc-acts">${acts.join('')}</div></div>`;
+  }
+  for(const j of jsonlFiles){
+    html += `<div class="dc-item"><div class="r1"><span class="dc-badge jsonl">JSONL 数据</span><span class="dc-path">${esc(j)}</span></div>
+      <div class="dc-meta">已导出的聊天记录文件（可直接建索引）</div>
+      <div class="dc-acts"><button class="btn" onclick="importPath('${q(j)}')">导入</button></div></div>`;
+  }
+  bd.innerHTML = html;
+  openDiscover();
 }
+async function importPath(p){
+  closeDiscover();
+  if(!p) return;
+  loading(true, '正在导入并建立索引…');
+  await api('import', {path: p});
+  loading(true, '后台导入中…');
+  const t0 = Date.now();
+  const timer = setInterval(async ()=>{
+    const s = await api('status');
+    setBar(Math.min(1, s.count/5000000));
+    $('loadingText').textContent = `导入中… 当前 ${fmt(s.count)} 条 (${((Date.now()-t0)/1000).toFixed(0)}s)`;
+    if(!s.indexing && s.count>0){ clearInterval(timer); loading(false); await loadChats(); }
+  }, 1500);
+}
+
+// ---------------- 训练页 ----------------
+let trainTimer = null;
+function trainExplain(){
+  const p = document.querySelector('input[name=persona]:checked').value;
+  $('trainExplain').textContent = p === 'me'
+    ? '将训练一个模仿"你"的说话方式的分身：对方的消息作为输入，你的回复作为学习目标。'
+    : '将训练一个模仿对方（如爱妻顺遂）的分身：你的消息作为输入，对方的回复作为学习目标。';
+}
+async function loadTrainPanel(){
+  const [m, g, s, ts] = await Promise.all([
+    api('models'), api('gpu'), api('serve_status'), api('train_status')
+  ]);
+  // 会话下拉
+  const sel = $('trChat');
+  sel.innerHTML = '';
+  for(const c of chats.slice(0, 300)){
+    const o = document.createElement('option');
+    o.value = c.name; o.textContent = `${c.name}（${fmt(c.total)}条）`;
+    sel.appendChild(o);
+  }
+  // 模型下拉：本地 + 镜像
+  const ms = $('trModel');
+  ms.innerHTML = '';
+  const addOpt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; ms.appendChild(o); };
+  for(const lm of (m.local||[])) addOpt(lm.path, `📁 ${lm.name}（本地 ${lm.size_gb}GB）`);
+  for(const cm of (m.catalog||[])) addOpt(cm.id, `☁️ ${cm.name}（${cm.tier}，${cm.size_gb}GB，镜像下载）`);
+  $('modelHint').textContent = '镜像模型来自 ModelScope（国内直连）。选中后点「下载选中」，完成后自动加入本地列表。';
+  // GPU 卡
+  $('trainGpu').innerHTML = g.available ? [
+    ['显卡', g.name, ''],
+    ['总显存', (g.total_gb||0).toFixed(1)+' GB', ''],
+    ['已用', (g.used_gb||0).toFixed(1)+' GB', g.used_gb>5?'red':'yellow'],
+    ['可用', (g.free_gb||0).toFixed(1)+' GB', g.free_gb>=4?'green':'red'],
+    ['利用率', (g.util_pct||0)+'%', ''],
+    ['能否训练', g.free_gb>=4 ? '✅ 可以' : '⚠️ 显存不足', g.free_gb>=4?'green':'red'],
+  ].map(([k,v,cls])=>`<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('')
+    : '<div class="card"><div class="k">GPU</div><div class="v red">未检测到 NVIDIA 显卡</div></div>';
+  // 推理服务
+  $('trServe').innerHTML = s.online
+    ? '<span class="badge ok">在线</span> 数字分身可用'
+    : '<span class="badge off">离线</span> 训练完成后自动启动';
+  // 任务状态
+  renderTrainStatus(ts);
+  trainExplain();
+  if(!trainTimer) trainTimer = setInterval(trainPoll, 3000);
+}
+async function trainPoll(){
+  try{
+    const ts = await api('train_status');
+    renderTrainStatus(ts);
+    if(ts.running){
+      // 轮询日志
+      const lr = await fetch('/api/train_log').then(r=>r.json()).catch(()=>({log:''}));
+      if(lr.log) $('trLog').textContent = lr.log.slice(-3000);
+    }
+  }catch(e){}
+}
+function renderTrainStatus(ts){
+  $('trStage').textContent = ts.running ? ts.stage : (ts.stage==='已停止' ? '已停止' : '空闲');
+  const pct = ts.total>0 ? Math.round(ts.step/ts.total*100) : (ts.running ? 5 : 0);
+  $('trBar').style.width = pct+'%';
+  $('trPct').textContent = pct+'%';
+  $('trJobDesc').textContent = ts.running
+    ? `${ts.chat} / ${ts.persona==='other'?'对方':'我'} / step ${ts.step}/${ts.total} / loss ${ts.loss}`
+    : (ts.stage ? ts.stage : '无');
+  $('trInfo').textContent = ts.running
+    ? `开始于 ${ts.started} · 输出: ${ts.out||''}`
+    : '';
+}
+async function startTrain(){
+  const chat = $('trChat').value;
+  const persona = document.querySelector('input[name=persona]:checked').value;
+  let model = $('trModel').value;
+  const custom = $('trModelPath').value.trim();
+  if(custom) model = custom;
+  if(!model){ alert('请先选择或输入基础模型路径'); return; }
+  const epochs = $('trEpochs').value || 2;
+  const samples = $('trSamples').value || 15000;
+  const lr = $('trLr').value || '0.0002';
+  const port = $('trPort').value || 5000;
+  if(!confirm(`开始训练？\n\n目标会话: ${chat}\n分身: ${persona==='other'?'对方':'我'}\n模型: ${model}\nepochs=${epochs} samples=${samples} lr=${lr}\n\n训练将占用显卡（预计数小时），期间界面可继续使用其他功能。`)) return;
+  loading(true, '启动训练任务…');
+  const r = await api('train_start', {chat, persona, model, out:'', epochs, samples, lr, port});
+  loading(false);
+  if(r.error){ alert('启动失败：'+r.error); return; }
+  $('trLog').textContent = '训练任务已启动，等待输出…';
+}
+async function stopTrain(){
+  if(!confirm('确定停止当前训练任务？')) return;
+  await api('train_stop');
+  $('trStage').textContent = '已停止';
+}
+async function dlModel(){
+  const id = $('trModel').value;
+  if(!id || !id.startsWith('Qwen/')){ alert('请选择一个镜像模型'); return; }
+  loading(true, '后台下载模型 '+id+' …');
+  const r = await api('model_download', {id});
+  loading(false);
+  if(r.error){ alert(r.error); return; }
+  $('trLog').textContent = '开始下载 ' + id + '，完成后自动刷新模型列表。\n下载进度见下方日志（大型模型需 10-40 分钟）。';
+}
+// 切到训练页时加载
+let trainLoaded = false;
+function onTrainTab(){
+  if(!trainLoaded){ trainLoaded = true; loadTrainPanel(); }
+  else { trainPoll(); api('gpu').then(g=>{ /* 刷新GPU卡 */ }); }
+}
+// 在 switchTab 中挂钩
+const _origSwitch = switchTab;
+switchTab = function(p){
+  _origSwitch(p);
+  if(p === 'train') onTrainTab();
+};
 
 // ---------------- 数字分身 ----------------
 let twinBusy = false;
