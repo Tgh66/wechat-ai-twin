@@ -805,10 +805,12 @@ func runDecryptFlow() {
 		return
 	}
 
-	// 3) 调用 Python 解密引擎（wechatauto-replica：进程内提取密钥 → 解密全部消息库 → 导出 JSONL）
-	py := findVenvPython()
-	if py == "" {
-		setDecrypt("缺少 Python 环境", 100, "未找到 ai-twin venv Python（wechatauto-replica 依赖）。请检查安装")
+	// 3) 确保 Python 解密环境（无则自动配置：创建 venv + 安装 wechatauto-replica）
+	py, err := ensureDecryptEnv(func(stage string, pct int, msg string) {
+		setDecrypt(stage, 10+pct/10, msg)
+	})
+	if err != nil {
+		setDecrypt("环境配置失败", 100, err.Error())
 		return
 	}
 	script := filepath.Join(wd, "scripts", "decrypt_wechat.py")
@@ -908,22 +910,79 @@ func parseTotal(line string) int64 {
 	return n
 }
 
-// findVenvPython 定位 ai-twin venv Python（wechatauto-replica 解密引擎依赖）
-func findVenvPython() string {
+// ensureDecryptEnv 确保解密用 Python 环境可用（找不到 venv 时自动创建并安装 wechatauto-replica）
+func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string, error) {
+	// 1) 已有 venv 直接用
 	if p := os.Getenv("WECHAT_TWIN_PYTHON"); p != "" && fileExists(p) {
-		return p
+		return p, nil
 	}
 	cands := []string{
 		filepath.Join(wd, "..", "ai-twin", "venv", "Scripts", "python.exe"),
 		filepath.Join(wd, "..", "ai-twin", "venv", "python.exe"),
+		filepath.Join(wd, "venv", "Scripts", "python.exe"),
 	}
 	for _, c := range cands {
 		abs, _ := filepath.Abs(c)
-		if fileExists(abs) {
-			return abs
+		if fileExists(abs) && pyHasWechatAuto(abs) {
+			return abs, nil
 		}
 	}
-	return ""
+
+	// 2) 自动创建 venv（优先 py launcher，其次 python）
+	progress("配置 Python 环境", 0, "未找到可用 Python 环境，正在自动创建 venv…")
+	venvPy := filepath.Join(wd, "venv", "Scripts", "python.exe")
+	sysPy := ""
+	for _, probe := range []string{"py -3", "python"} {
+		parts := strings.Split(probe, " ")
+		cmd := exec.Command(parts[0], append(parts[1:], "--version")...)
+		if out, err := cmd.CombinedOutput(); err == nil && strings.Contains(strings.ToLower(string(out)), "python") {
+			sysPy = probe
+			break
+		}
+	}
+	if sysPy == "" {
+		return "", errors.New("未检测到系统 Python。请安装 Python 3.10+（勾选 Add to PATH）后重试，或在环境变量 WECHAT_TWIN_PYTHON 指定已装 wechatauto 的 python.exe")
+	}
+	parts := strings.Split(sysPy, " ")
+	cmd := exec.Command(parts[0], append(parts[1:], "-m", "venv", filepath.Join(wd, "venv"))...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", errors.New("创建 venv 失败：" + err.Error())
+	}
+	if !fileExists(venvPy) {
+		return "", errors.New("venv 创建后未找到 python.exe（请检查系统 Python 完整性）")
+	}
+
+	// 3) 安装/校验 wechatauto-replica + cryptography
+	if !pyHasWechatAuto(venvPy) {
+		progress("安装解密依赖", 50, "正在安装 wechatauto-replica（微信 4.0 解密引擎）…")
+		installed := false
+		for _, mirror := range []string{"", "https://pypi.tuna.tsinghua.edu.cn/simple"} {
+			args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check"}
+			if mirror != "" {
+				args = append(args, "-i", mirror)
+			}
+			args = append(args, "wechatauto-replica", "cryptography")
+			c := exec.Command(venvPy, args...)
+			c.Stdout = os.Stdout
+			c.Stderr = os.Stderr
+			if c.Run() == nil && pyHasWechatAuto(venvPy) {
+				installed = true
+				break
+			}
+		}
+		if !installed {
+			return "", errors.New("自动安装解密依赖失败（网络受限？）。可手动执行：<venv>\\Scripts\\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple wechatauto-replica cryptography")
+		}
+	}
+	return venvPy, nil
+}
+
+// pyHasWechatAuto 检查指定 python 能否 import wechatauto
+func pyHasWechatAuto(py string) bool {
+	c := exec.Command(py, "-c", "import wechatauto")
+	return c.Run() == nil
 }
 
 func fileExists(p string) bool {
