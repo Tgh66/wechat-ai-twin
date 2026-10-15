@@ -12,6 +12,9 @@ wechatauto_logs/
 # 离线依赖包（30MB，只随 Release zip 发布，不入 git）
 wheels/
 
+# 内置 Python 3.11 运行时（11MB，只随 Release zip 发布，不入 git）
+runtime/
+
 # 构建产物
 *.exe
 *.zip

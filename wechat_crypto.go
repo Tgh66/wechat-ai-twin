@@ -910,9 +910,15 @@ func parseTotal(line string) int64 {
 	return n
 }
 
-// ensureDecryptEnv 确保解密用 Python 环境可用（找不到 venv 时自动创建并安装 wechatauto-replica）
-// 安装顺序：① 本地离线 wheels（wheels/ 目录，国内无网也能装）→ ② 国内镜像（pip-mirrors.txt 逐个）→ ③ 官方源
+// ensureDecryptEnv 确保解密用 Python 环境可用
+// 优先级：① 自带 runtime（打包的 Python 3.11，零依赖零网络，推荐）→ ② 已有 venv → ③ 系统 Python 创建 venv + 离线 wheels → ④ 国内镜像
 func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string, error) {
+	// 0) 自带嵌入式 Python 运行时（runtime\python.exe，依赖已预装）
+	rt := filepath.Join(wd, "runtime", "python.exe")
+	if fileExists(rt) && pyHasWechatAuto(rt) {
+		progress("解密环境就绪", 90, "使用内置 Python 3.11 运行时（无需安装）")
+		return rt, nil
+	}
 	// 1) 已有 venv 直接用
 	if p := os.Getenv("WECHAT_TWIN_PYTHON"); p != "" && fileExists(p) {
 		return p, nil
@@ -943,7 +949,7 @@ func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string,
 		}
 	}
 	if sysPy == "" {
-		return "", errors.New("未检测到系统 Python。请安装 Python 3.11（勾选 Add to PATH）后重试，或在环境变量 WECHAT_TWIN_PYTHON 指定已装 wechatauto 的 python.exe")
+		return "", errors.New("未检测到系统 Python，且内置运行时缺失。请重新下载包含 runtime\\ 目录的完整安装包，或安装 Python 3.11（勾选 Add to PATH）")
 	}
 	parts := strings.Split(sysPy, " ")
 	cmd := exec.Command(parts[0], append(parts[1:], "-m", "venv", venvDir)...)
@@ -959,10 +965,10 @@ func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string,
 	// 3) 安装/校验 wechatauto-replica（离线 wheels 优先 → 国内镜像 → 官方源）
 	if !pyHasWechatAuto(venvPy) {
 		progress("安装解密依赖", 50, "正在安装 wechatauto-replica（微信 4.0 解密引擎），优先使用本地离线包…")
-		installed := installWechatAutoOffline(venvPy)
+		installed := installWechatAutoOffline(venvPy, progress)
 		if !installed {
 			for _, mirror := range pipMirrors() {
-				progress("安装解密依赖", 55, "本地离线包不可用，尝试镜像 "+mirror+" …")
+				progress("安装解密依赖", 55, "本地离线包不可用（Python 版本非 3.11？），尝试镜像 "+mirror+" …")
 				if pipInstall(venvPy, mirror, "wechatauto-replica", "cryptography") && pyHasWechatAuto(venvPy) {
 					installed = true
 					break
@@ -970,20 +976,23 @@ func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string,
 			}
 		}
 		if !installed {
-			return "", errors.New("自动安装解密依赖失败（网络受限或镜像不可达）。可手动执行：<venv>\\Scripts\\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple wechatauto-replica cryptography")
+			return "", errors.New("自动安装解密依赖失败（网络受限或镜像不可达）。请使用包含 runtime\\ 目录的完整安装包（内置 Python，无需安装依赖），或手动执行：<venv>\\Scripts\\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple wechatauto-replica cryptography")
 		}
 	}
 	return venvPy, nil
 }
 
 // installWechatAutoOffline 从 wheels/ 离线安装解密依赖（不依赖网络）
-func installWechatAutoOffline(venvPy string) bool {
+// 安装过程写入 data\env_setup.log，方便排查
+func installWechatAutoOffline(venvPy string, progress func(stage string, pct int, msg string)) bool {
 	wheelsDir := filepath.Join(wd, "wheels")
 	if !dirExists(wheelsDir) {
 		return false
 	}
+	logF := filepath.Join(dataDir, "env_setup.log")
 	// 先装 wheel（sdist 构建需要 bdist_wheel 命令）
-	if !pipOffline(venvPy, wheelsDir, "wheel") {
+	progress("安装解密依赖", 45, "离线安装 wheel 构建工具…")
+	if !pipOffline(venvPy, wheelsDir, logF, "wheel") {
 		return false
 	}
 	// 装解密引擎 + 运行时依赖（--no-deps 显式列出，避免拉取重型可选依赖 opencv/numpy）
@@ -991,33 +1000,47 @@ func installWechatAutoOffline(venvPy string) bool {
 		"winsdk", "uiautomation", "zstandard", "comtypes", "colorama", "psutil", "pyperclip",
 		"pymsgbox", "pyautogui", "pyscreeze", "pygetwindow", "pyrect", "pytweening", "mouseinfo", "pillow"}
 	args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-		"--no-index", "--find-links", wheelsDir, "--no-build-isolation", "--no-deps"}
+		"--no-index", "--find-links", wheelsDir, "--no-build-isolation", "--no-deps", "--timeout", "120"}
 	args = append(args, pkgs...)
 	c := exec.Command(venvPy, args...)
-	c.Stdout = nil
-	c.Stderr = nil
-	return c.Run() == nil && pyHasWechatAuto(venvPy)
+	if f, err := os.OpenFile(logF, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		c.Stdout = f
+		c.Stderr = f
+		defer f.Close()
+	}
+	progress("安装解密依赖", 55, "正在离线安装解密引擎（wheels/ 本地包）…")
+	ok := c.Run() == nil && pyHasWechatAuto(venvPy)
+	if !ok {
+		progress("安装解密依赖", 55, "离线安装失败，已写入日志 data\\env_setup.log，尝试镜像…")
+	}
+	return ok
 }
 
-// pipOffline 离线安装指定包
-func pipOffline(venvPy, wheelsDir, pkg string) bool {
+// pipOffline 离线安装指定包（输出写 log）
+func pipOffline(venvPy, wheelsDir, logF, pkg string) bool {
 	c := exec.Command(venvPy, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-		"--no-index", "--find-links", wheelsDir, pkg)
-	c.Stdout = nil
-	c.Stderr = nil
+		"--no-index", "--find-links", wheelsDir, "--timeout", "120", pkg)
+	if f, err := os.OpenFile(logF, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		c.Stdout = f
+		c.Stderr = f
+		defer f.Close()
+	}
 	return c.Run() == nil
 }
 
-// pipInstall 从指定镜像安装包（-i mirror，空串表示官方源）
+// pipInstall 从指定镜像安装包（-i mirror，空串表示官方源；输出写 log）
 func pipInstall(venvPy, mirror string, pkgs ...string) bool {
-	args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check"}
+	args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--timeout", "120"}
 	if mirror != "" {
 		args = append(args, "-i", mirror)
 	}
 	args = append(args, pkgs...)
 	c := exec.Command(venvPy, args...)
-	c.Stdout = nil
-	c.Stderr = nil
+	if f, err := os.OpenFile(filepath.Join(dataDir, "env_setup.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		c.Stdout = f
+		c.Stderr = f
+		defer f.Close()
+	}
 	return c.Run() == nil
 }
 

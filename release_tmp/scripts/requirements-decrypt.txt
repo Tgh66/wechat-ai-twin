@@ -1,0 +1,5 @@
+# 微信 4.0 解密引擎依赖（wechatauto-replica 及其核心运行时）
+# 离线安装优先使用 wheels/ 目录（--no-index --find-links wheels/ --no-build-isolation）
+# 离线失败后按 pip-mirrors.txt 逐个国内镜像在线安装
+wechatauto-replica==1.2.4.4
+cryptography

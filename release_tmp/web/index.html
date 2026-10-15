@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>微信 AI 数字分身工作台</title>
+<script src="echarts.min.js"></script>
+<style>
+:root{--bg:#0f1420;--card:#1a2233;--card2:#202a40;--line:#2c3850;--tx:#e6ecf7;--tx2:#8fa1c0;--acc:#4f8cff;--acc2:#7c5cff;--ok:#3ddc84;--warn:#ffb454;--err:#ff5c5c}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font-family:"Segoe UI","Microsoft YaHei",sans-serif;height:100vh;overflow:hidden}
+.layout{display:flex;height:100vh}
+/* 左侧会话栏 */
+.side{width:300px;min-width:300px;background:var(--card);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.side h1{font-size:16px;padding:16px 16px 10px;color:var(--acc)}
+.side .sub{font-size:11px;color:var(--tx2);padding:0 16px 12px}
+.searchbox{margin:0 12px 10px;position:relative}
+.searchbox input{width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px 12px;font-size:13px;outline:none}
+.chatlist{flex:1;overflow-y:auto;padding:0 8px 12px}
+.chatitem{padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:2px;transition:.15s;border:1px solid transparent}
+.chatitem:hover{background:var(--card2)}
+.chatitem.active{background:var(--card2);border-color:var(--acc)}
+.chatitem .nm{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chatitem .ct{font-size:11px;color:var(--tx2);margin-top:3px;display:flex;justify-content:space-between}
+.chatitem .ct .bar{height:3px;background:var(--line);border-radius:2px;margin-top:5px;overflow:hidden}
+.chatitem .ct .bar i{display:block;height:100%;background:var(--acc)}
+.side .foot{padding:10px 14px;font-size:11px;color:var(--tx2);border-top:1px solid var(--line)}
+.side .foot .btn{display:inline-block;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;margin:2px 2px 0 0}
+.side .foot .btn:hover{border-color:var(--acc)}
+/* 主区 */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:56px;background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 20px;gap:14px}
+.topbar .title{font-size:16px;font-weight:600}
+.topbar .selchat{font-size:13px;color:var(--tx2);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tabs{display:flex;gap:2px;height:44px;background:var(--card);border-bottom:1px solid var(--line);padding:0 12px;align-items:center}
+.tab{padding:8px 18px;font-size:13px;color:var(--tx2);cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;user-select:none}
+.tab:hover{color:var(--tx)}
+.tab.active{color:var(--acc);border-bottom-color:var(--acc);background:rgba(79,140,255,.08)}
+.content{flex:1;overflow-y:auto;padding:18px 22px}
+.page{display:none}
+.page.active{display:block}
+/* 指标卡 */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.card .k{font-size:11px;color:var(--tx2);margin-bottom:6px}
+.card .v{font-size:20px;font-weight:700;color:var(--acc)}
+.card .v small{font-size:11px;color:var(--tx2);font-weight:400}
+.card .v.green{color:var(--ok)}.card .v.red{color:var(--err)}.card .v.yellow{color:var(--warn)}
+/* 图表网格 */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.grid .full{grid-column:1/-1}
+.chartbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+.chartbox h3{font-size:13px;color:var(--tx2);margin-bottom:10px;font-weight:500}
+.chartbox .chart{width:100%;height:300px}
+.chartbox.tall .chart{height:380px}
+/* 加载遮罩 */
+#loading{position:fixed;inset:0;background:rgba(15,20,32,.82);display:none;align-items:center;justify-content:center;z-index:99;flex-direction:column;gap:16px}
+#loading.show{display:flex}
+.spinner{width:44px;height:44px;border:4px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#loading .t{font-size:13px;color:var(--tx2)}
+/* 进度条 */
+.progress{height:6px;background:var(--card2);border-radius:3px;overflow:hidden;width:240px}
+.progress i{display:block;height:100%;width:0;background:var(--acc);transition:width .3s}
+/* 微信目录发现弹层 */
+#discoverModal{position:fixed;inset:0;background:rgba(15,20,32,.85);display:none;align-items:center;justify-content:center;z-index:100}
+#discoverModal.show{display:flex}
+#discoverModal .box{background:var(--card);border:1px solid var(--line);border-radius:14px;width:min(780px,94vw);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+#discoverModal .hd{padding:15px 20px;border-bottom:1px solid var(--line);font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+#discoverModal .hd button{background:none;border:none;color:var(--tx2);font-size:18px;cursor:pointer;line-height:1;padding:0 4px}
+#discoverModal .bd{padding:14px 20px;overflow-y:auto;flex:1}
+.dc-item{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.dc-item .r1{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dc-badge{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:600;white-space:nowrap}
+.dc-badge.new{background:rgba(61,132,255,.18);color:#6ab0ff}
+.dc-badge.old{background:rgba(255,190,61,.16);color:#ffc45e}
+.dc-badge.jsonl{background:rgba(61,220,132,.16);color:var(--ok)}
+.dc-path{font-size:13px;font-weight:600;word-break:break-all}
+.dc-meta{font-size:11px;color:var(--tx2);margin-top:5px;word-break:break-all;line-height:1.6}
+.dc-acts{margin-top:9px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.dc-acts .btn{padding:5px 13px;font-size:12px}
+.dc-none{font-size:11px;color:var(--tx2)}
+/* 搜索 */
+.searchbar{display:flex;gap:10px;margin-bottom:14px}
+.searchbar input{flex:1;background:var(--card);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px 14px;font-size:13px;outline:none}
+.searchbar button{background:var(--acc);border:none;color:#fff;border-radius:8px;padding:0 22px;font-size:13px;cursor:pointer}
+.hits{max-height:520px;overflow-y:auto}
+.hit{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:8px;font-size:13px;line-height:1.6}
+.hit .tm{font-size:11px;color:var(--tx2);margin-bottom:4px}
+.hit .who{color:var(--acc);font-weight:600;margin-right:6px}
+.hit .who.o{color:var(--acc2)}
+mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding:0 2px}
+/* 对话 */
+.chatwin{display:flex;flex-direction:column;height:calc(100vh - 220px);background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.msgbox{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:72%;padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.6;white-space:pre-wrap}
+.msg.me{align-self:flex-end;background:var(--acc);color:#fff;border-bottom-right-radius:4px}
+.msg.ai{align-self:flex-start;background:var(--card2);border-bottom-left-radius:4px}
+.msg .tag{font-size:10px;opacity:.75;margin-bottom:4px}
+.inputbar{display:flex;gap:10px;padding:12px;border-top:1px solid var(--line)}
+.inputbar input{flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:10px 14px;font-size:13px;outline:none}
+.inputbar button{background:var(--acc);border:none;color:#fff;border-radius:8px;padding:0 26px;cursor:pointer;font-size:13px}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;margin-left:8px}
+.badge.ok{background:rgba(61,220,132,.15);color:var(--ok)}
+.badge.off{background:rgba(255,92,92,.15);color:var(--err)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="side">
+    <h1>💬 微信 AI 数字分身</h1>
+    <div class="sub">本地聊天记录 · 统计 · 情感分析 · 数字分身</div>
+    <div class="searchbox"><input id="chatSearch" placeholder="🔍 搜索会话…" oninput="filterChats()"></div>
+    <div class="chatlist" id="chatList"><div style="color:var(--tx2);font-size:12px;padding:20px;text-align:center" id="chatEmpty">正在加载…</div></div>
+    <div class="foot">
+      <span id="metaInfo">…</span>
+      <div style="margin-top:8px">
+        <button class="btn" onclick="showImport()">📥 导入记录</button>
+        <button class="btn" onclick="discover()">🔎 自动搜索</button>
+      </div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar">
+      <span class="title">工作台</span>
+      <span class="selchat" id="selChat">请选择左侧会话开始分析</span>
+      <span id="sysInfo" style="font-size:11px;color:var(--tx2)"></span>
+    </div>
+    <div class="tabs">
+      <div class="tab active" data-p="overview" onclick="switchTab('overview')">总览</div>
+      <div class="tab" data-p="sentiment" onclick="switchTab('sentiment')">情感分析</div>
+      <div class="tab" data-p="records" onclick="switchTab('records')">记录分析</div>
+      <div class="tab" data-p="duo" onclick="switchTab('duo')">双人报告</div>
+      <div class="tab" data-p="twin" onclick="switchTab('twin')">数字分身</div>
+      <div class="tab" data-p="train" onclick="switchTab('train')">训练</div>
+      <div class="tab" data-p="data" onclick="switchTab('data')">数据</div>
+    </div>
+    <div class="content">
+      <!-- 总览 -->
+      <div class="page active" id="p-overview">
+        <div class="cards" id="ovCards"></div>
+        <div class="grid">
+          <div class="chartbox"><h3>消息类型构成</h3><div class="chart" id="cTypes"></div></div>
+          <div class="chartbox"><h3>24 小时活跃分布</h3><div class="chart" id="cHours"></div></div>
+          <div class="chartbox"><h3>星期活跃分布</h3><div class="chart" id="cWeek"></div></div>
+          <div class="chartbox tall"><h3>月度消息趋势</h3><div class="chart" id="cMonths"></div></div>
+          <div class="chartbox tall"><h3>我的高频词</h3><div class="chart" id="cSelfWords"></div></div>
+          <div class="chartbox tall"><h3>对方高频词</h3><div class="chart" id="cOtherWords"></div></div>
+          <div class="chartbox"><h3>表情使用排行</h3><div class="chart" id="cEmojis"></div></div>
+          <div class="chartbox"><h3>消息量词云</h3><div class="chart" id="cWordCloud"></div></div>
+        </div>
+      </div>
+      <!-- 情感分析 -->
+      <div class="page" id="p-sentiment">
+        <div class="cards" id="seCards"></div>
+        <div class="grid">
+          <div class="chartbox"><h3>整体情感倾向</h3><div class="chart" id="sGauge"></div></div>
+          <div class="chartbox"><h3>情感占比（正/负/中性）</h3><div class="chart" id="sRatio"></div></div>
+          <div class="chartbox tall full"><h3>情感随时间变化（逐月均值）</h3><div class="chart" id="sSeries"></div></div>
+          <div class="chartbox tall full"><h3>近30天情感热力图（日 × 时段）</h3><div class="chart" id="sHeat"></div></div>
+          <div class="chartbox"><h3>七类情绪分布（雷达）</h3><div class="chart" id="sEmoRadar"></div></div>
+          <div class="chartbox"><h3>七类情绪占比（饼图）</h3><div class="chart" id="sEmoPie"></div></div>
+          <div class="chartbox tall"><h3>高频情绪词</h3><div class="chart" id="sEmoWords"></div></div>
+          <div class="chartbox tall"><h3>情绪词云</h3><div class="chart" id="sEmoCloud"></div></div>
+          <div class="chartbox"><h3>双方情感对比</h3><div class="chart" id="sCompare"></div></div>
+          <div class="chartbox"><h3>双方消息量对比</h3><div class="chart" id="sVol"></div></div>
+          <div class="chartbox tall"><h3>情感强度分布</h3><div class="chart" id="sStrength"></div></div>
+          <div class="chartbox tall"><h3>各时段情感均值</h3><div class="chart" id="sHour"></div></div>
+          <div class="chartbox full"><h3>情绪消息明细（积极 / 消极）</h3>
+            <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
+              <select id="emoKind" style="background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font-size:12px">
+                <option value="neg">😔 消极消息</option>
+                <option value="pos">😄 积极消息</option>
+              </select>
+              <button class="btn" onclick="loadEmoMsgs()">查看</button>
+              <span style="font-size:11px;color:var(--tx2)" id="emoMsgInfo"></span>
+            </div>
+            <div class="hits" id="emoMsgList" style="max-height:380px"><div style="color:var(--tx2);font-size:12px;padding:16px;text-align:center">选择情绪类型后点「查看」，展示该会话最近消息（含内容与时间）</div></div>
+          </div>
+        </div>
+      </div>
+      <!-- 记录分析 -->
+      <div class="page" id="p-records">
+        <div class="searchbar">
+          <input id="kwInput" placeholder="输入关键词，搜索聊天记录（如：房子 / 加班 / 喜欢）" onkeydown="if(event.key==='Enter')doSearch()">
+          <button onclick="doSearch()">搜索</button>
+          <button style="background:var(--card2);color:var(--tx);border:1px solid var(--line)" onclick="exportJson()">导出 JSON</button>
+        </div>
+        <div class="hits" id="hitList"><div style="color:var(--tx2);font-size:12px;padding:20px;text-align:center">输入关键词，检索该会话全部历史记录</div></div>
+      </div>
+      <!-- 双人报告 -->
+      <div class="page" id="p-duo">
+        <div class="cards" id="duoCards"></div>
+        <div class="grid">
+          <div class="chartbox tall"><h3>互动节奏：谁先开口（消息序列构成）</h3><div class="chart" id="dTempo"></div></div>
+          <div class="chartbox tall"><h3>回复热度对比（昼夜）</h3><div class="chart" id="dDayNight"></div></div>
+          <div class="chartbox"><h3>亲密度评分</h3><div class="chart" id="dIntimacy"></div></div>
+          <div class="chartbox"><h3>情感波动指数</h3><div class="chart" id="dVol"></div></div>
+          <div class="chartbox full"><h3>对话关键词（双方对比）</h3><div class="chart" id="dWords" style="height:340px"></div></div>
+        </div>
+      </div>
+      <!-- 数字分身 -->
+      <div class="page" id="p-twin">
+        <div style="margin-bottom:12px;font-size:12px;color:var(--tx2)">
+          与你的数字分身对话（基于你的聊天记录微调的模型）
+          <span class="badge off" id="twinState">未连接</span>
+          <span style="margin-left:10px" id="twinNote"></span>
+        </div>
+        <div style="background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">推理服务（数字分身引擎）</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select id="twinModel" style="flex:1;min-width:220px;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font-size:12px"><option value="">— 加载中 —</option></select>
+            <input id="twinPort" type="number" value="5000" min="1024" max="65535" style="width:90px;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font-size:12px" title="推理服务端口">
+            <button class="btn" onclick="startServe()">▶ 启动服务</button>
+            <button class="btn" style="background:var(--card2);border:1px solid var(--err);color:var(--err)" onclick="stopServe()">⏹ 停止</button>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:var(--tx2)" id="twinServeNote"></div>
+          <div style="margin-top:6px;font-size:11px;color:var(--tx2);font-family:monospace;white-space:pre-wrap;max-height:90px;overflow-y:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px" id="serveLog">（服务日志将在此显示）</div>
+        </div>
+        <div class="chatwin">
+          <div class="msgbox" id="msgBox">
+            <div class="msg ai"><div class="tag">AI 分身</div>嗨，我是你的 AI 数字分身～ 想聊点什么？</div>
+          </div>
+          <div class="inputbar">
+            <input id="twinInput" placeholder="输入消息…" onkeydown="if(event.key==='Enter')sendTwin()" autocomplete="off">
+            <button onclick="sendTwin()">发送</button>
+          </div>
+        </div>
+      </div>
+      <!-- 训练 -->
+      <div class="page" id="p-train">
+        <div class="cards" id="trainGpu"></div>
+        <div class="grid">
+          <div class="chartbox">
+            <h3>① 选择目标会话（训练谁的数字分身）</h3>
+            <div style="display:flex;gap:10px;margin-bottom:10px">
+              <select id="trChat" style="flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px;font-size:13px"></select>
+            </div>
+            <div style="display:flex;gap:10px">
+              <label style="flex:1;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+                <input type="radio" name="persona" value="me" checked onchange="trainExplain()"> 🧑 训练“我”的分身（模仿我的说话方式）
+              </label>
+              <label style="flex:1;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+                <input type="radio" name="persona" value="other" onchange="trainExplain()"> 👤 训练对方的分身（模仿对方的说话风格）
+              </label>
+            </div>
+            <div id="trainExplain" style="margin-top:10px;font-size:12px;color:var(--tx2)"></div>
+          </div>
+          <div class="chartbox">
+            <h3>② 选择基础模型</h3>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <select id="trModel" style="flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px;font-size:13px">
+                <option value="">— 加载中 —</option>
+              </select>
+              <button class="btn" style="background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:0 14px;cursor:pointer;font-size:12px" onclick="dlModel()">下载选中</button>
+            </div>
+            <div style="display:flex;gap:8px">
+              <input id="trModelPath" placeholder="或手动导入本地模型路径（含 config.json 的目录）" style="flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px;font-size:12px">
+            </div>
+            <div id="modelHint" style="margin-top:8px;font-size:11px;color:var(--tx2)"></div>
+            <div id="modelManage" style="margin-top:8px;font-size:12px;color:var(--tx2)"></div>
+          </div>
+          <div class="chartbox">
+            <h3>③ 训练参数</h3>
+            <div style="margin-bottom:8px;font-size:11px;color:var(--tx2);line-height:1.7">
+              📌 推荐值：epochs=1~2（越多越像但更慢、易过拟合）· 样本数=5000~20000（每条对话对上限）· 学习率=0.0001~0.0003（偏大易发散）· 端口默认 5000
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">
+              <label style="color:var(--tx2)" title="训练轮数：1~2 推荐，越多越像但更慢/易过拟合">epochs<input id="trEpochs" type="number" value="2" min="1" max="5" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)" title="样本上限：5000~20000 推荐，越多覆盖对话越全但越慢">样本数（上限）<input id="trSamples" type="number" value="15000" min="500" max="60000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)" title="学习率：0.0001~0.0003 推荐，偏大易发散">学习率<input id="trLr" type="text" value="0.0002" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)" title="推理服务端口，默认 5000">推理端口<input id="trPort" type="number" value="5000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+            </div>
+          </div>
+          <div class="chartbox">
+            <h3>④ 开始训练</h3>
+            <div style="display:flex;gap:10px;margin-bottom:12px">
+              <button id="trStartBtn" style="flex:1;background:var(--acc);border:none;color:#fff;border-radius:8px;padding:12px;font-size:14px;cursor:pointer" onclick="startTrain()">🚀 开始训练</button>
+              <button style="flex:1;background:var(--card2);border:1px solid var(--err);color:var(--err);border-radius:8px;padding:12px;font-size:14px;cursor:pointer" onclick="stopTrain()">⏹ 停止</button>
+            </div>
+            <div style="font-size:12px;color:var(--tx2);line-height:1.7">
+              <div>当前任务：<span id="trJobDesc">无</span></div>
+              <div style="margin-top:8px">推理服务：<span id="trServe">检测中…</span></div>
+            </div>
+          </div>
+          <div class="chartbox full">
+            <h3>训练进度</h3>
+            <div style="display:flex;align-items:center;gap:14px">
+              <span id="trStage" style="font-size:13px;color:var(--acc);min-width:120px">空闲</span>
+              <div style="flex:1;height:10px;background:var(--card2);border-radius:5px;overflow:hidden"><i id="trBar" style="display:block;height:100%;width:0;background:linear-gradient(90deg,#4f8cff,#7c5cff);transition:width .5s"></i></div>
+              <span id="trPct" style="font-size:12px;color:var(--tx2);min-width:70px;text-align:right">0%</span>
+            </div>
+            <div style="margin-top:8px;font-size:12px;color:var(--tx2)" id="trInfo"></div>
+            <div style="margin-top:10px;font-size:11px;color:var(--tx2);font-family:monospace;white-space:pre-wrap;max-height:150px;overflow-y:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px" id="trLog">（训练日志将在此显示）</div>
+          </div>
+        </div>
+      </div>
+      <!-- 数据（数据源/清洗） -->
+      <div class="page" id="p-data">
+        <div class="cards" id="dataCards"></div>
+        <div class="chartbox full">
+          <h3>聊天记录数据源（JSONL 导出 / 自动解密）</h3>
+          <div style="font-size:12px;color:var(--tx2);line-height:1.8;margin-bottom:10px;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px">
+            💡 微信 4.0 的聊天数据库（<code>E:\xwechat_files\...</code>）为 SQLCipher 加密格式，无需手动导出。<b>保持微信登录运行</b>，点下方「自动解密微信数据库」，本工具会全盘扫描加密库、从微信进程提取密钥并自动解密导入。
+          </div>
+          <div id="dataSrcList"></div>
+          <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn" onclick="reindexAll()">🔄 合并去重并重建索引</button>
+            <button class="btn" style="background:var(--card2);border:1px solid var(--line);color:var(--tx)" onclick="discover()">🔎 自动搜索数据目录</button>
+            <button class="btn" style="background:#2f855a;color:#fff" onclick="wxDecrypt()">🔓 自动解密微信数据库</button>
+          </div>
+          <div id="wxDecryptBox" style="display:none;margin-top:12px;padding:12px;background:var(--card2);border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.9">
+            <div id="wxDecryptStage">—</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+              <div style="flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden"><div id="wxDecryptBar" style="height:100%;width:0;background:#2f855a;transition:width .3s"></div></div>
+              <span id="wxDecryptPct" style="white-space:nowrap">0%</span>
+            </div>
+            <div id="wxDecryptMsg" style="color:var(--tx2);margin-top:4px">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="loading"><div class="spinner"></div><div class="t" id="loadingText">加载中…</div><div class="progress"><i id="loadingBar"></i></div></div>
+
+<div id="discoverModal"><div class="box">
+  <div class="hd"><span>🔎 微信数据目录 / 聊天记录</span><button onclick="closeDiscover()" title="关闭">✕</button></div>
+  <div class="bd" id="discoverList"></div>
+</div></div>
+
+<script>
+// ---------------- 状态 ----------------
+let chats = [];
+let curChat = '';
+let charts = {};
+let hist = {};
+
+const $ = id => document.getElementById(id);
+
+function loading(on, text){
+  $('loading').classList.toggle('show', on);
+  if(text) $('loadingText').textContent = text;
+}
+function setBar(p){ $('loadingBar').style.width = (p*100).toFixed(1)+'%'; }
+
+async function api(path, qs){
+  const url = '/api/' + path + (qs ? '?' + new URLSearchParams(qs) : '');
+  const r = await fetch(url);
+  return r.json();
+}
+
+// ---------------- 初始化 ----------------
+async function init(){
+  const meta = await api('meta');
+  $('metaInfo').textContent = `索引: ${fmt(meta.db_count)} 条`;
+  $('sysInfo').textContent = `Go 引擎 v${meta.version} · 数据目录 ${meta.data_dir}`;
+  loadChats();
+}
+async function loadChats(){
+  loading(true, '加载会话列表…');
+  const d = await api('chats');
+  chats = d.chats || [];
+  renderChats('');
+  if(chats.length){ selectChat(chats[0].name); }
+  loading(false);
+}
+function filterChats(){
+  const kw = $('chatSearch').value.trim().toLowerCase();
+  renderChats(kw);
+}
+function renderChats(kw){
+  const list = $('chatList');
+  list.innerHTML = '';
+  const arr = chats.filter(c => !kw || c.name.toLowerCase().includes(kw));
+  if(!arr.length){ list.innerHTML = '<div style="color:var(--tx2);font-size:12px;padding:20px;text-align:center">无会话</div>'; return; }
+  for(const c of arr){
+    const div = document.createElement('div');
+    div.className = 'chatitem' + (c.name===curChat?' active':'');
+    const pct = c.total ? Math.round(c.self/c.total*100) : 0;
+    div.innerHTML = `<div class="nm">${esc(c.name)}</div>
+      <div class="ct"><span>${fmt(c.total)} 条 · 我 ${pct}%</span></div>
+      <div class="ct"><div class="bar" style="width:100%"><i style="width:${pct}%"></i></div></div>`;
+    div.onclick = () => selectChat(c.name);
+    list.appendChild(div);
+  }
+}
+function selectChat(name){
+  curChat = name;
+  $('selChat').textContent = '当前会话：' + name;
+  document.querySelectorAll('.chatitem').forEach(el => el.classList.toggle('active', el.querySelector('.nm').textContent === name));
+  loadAll();
+}
+function switchTab(p){
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.p === p));
+  document.querySelectorAll('.page').forEach(x => x.classList.toggle('active', x.id === 'p-' + p));
+  if(curChat && p !== 'twin') loadAll();
+  window.dispatchEvent(new Event('resize'));
+}
+
+// ---------------- 数据加载 ----------------
+let loadSeq = 0; // 请求序号：快速切换会话时只渲染最新一次
+async function loadAll(){
+  if(!curChat) return;
+  const seq = ++loadSeq;
+  loading(true, '分析会话数据…');
+  setBar(0.15);
+  const [st, se] = await Promise.all([api('stats', {chat: curChat}), api('sentiment', {chat: curChat})]);
+  if(seq !== loadSeq) return; // 期间已切换会话，丢弃过期结果
+  setBar(0.6);
+  hist = {stats: st, sent: se};
+  renderOverview(st);
+  renderSentiment(se, st);
+  renderDuo(st, se);
+  setBar(1);
+  loading(false);
+}
+
+// ---------------- 总览 ----------------
+function renderOverview(st){
+  const days = Math.max(st.active_days||1, 1);
+  $('ovCards').innerHTML = [
+    ['消息总数', fmt(st.total), ''],
+    ['我发送', fmt(st.self), 'green'],
+    ['对方发送', fmt(st.other), ''],
+    ['我占比', (st.total? Math.round(st.self/st.total*100):0)+'%', 'yellow'],
+    ['活跃天数', fmt(st.active_days), ''],
+    ['日均消息', st.daily_avg.toFixed(1), ''],
+    ['会话数', fmt(st.sessions), ''],
+    ['平均句长', (st.avg_len||0).toFixed(1)+' 字', ''],
+    ['消息最多一天', (st.best_day||'')+' ('+fmt(st.best_day_cnt)+')', 'green'],
+    ['最晚互动', st.latest_night||'—', ''],
+  ].map(([k,v,cls]) => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('');
+
+  // 类型环形
+  const types = st.types || {};
+  set('cTypes', {tooltip:{trigger:'item'},legend:{bottom:0,textStyle:{color:'#8fa1c0'}},series:[{type:'pie',radius:['38%','68%'],center:['50%','44%'],data:Object.entries(types).map(([k,v])=>({name:k,value:v})),itemStyle:{borderColor:'#1a2233',borderWidth:2}}]});
+
+  // 24h
+  set('cHours', {tooltip:{},grid:{left:40,right:10,top:20,bottom:24},xAxis:{type:'category',data:Array.from({length:24},(_,i)=>i+'时'),axisLabel:{color:'#8fa1c0',interval:1},axisLine:{lineStyle:{color:'#2c3850'}}},yAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'bar',data:st.hours,itemStyle:{color:'#4f8cff',borderRadius:[4,4,0,0]}}]});
+
+  // 星期
+  const wk = ['一','二','三','四','五','六','日'];
+  set('cWeek', {tooltip:{},grid:{left:40,right:10,top:20,bottom:24},xAxis:{type:'category',data:wk.map(w=>'周'+w),axisLabel:{color:'#8fa1c0'},axisLine:{lineStyle:{color:'#2c3850'}}},yAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'bar',data:st.week,itemStyle:{color:'#7c5cff',borderRadius:[4,4,0,0]}}]});
+
+  // 月度
+  const mon = st.months || [];
+  set('cMonths', {tooltip:{trigger:'axis'},grid:{left:50,right:16,top:20,bottom:26},xAxis:{type:'category',data:mon.map(m=>m.month),axisLabel:{color:'#8fa1c0'},axisLine:{lineStyle:{color:'#2c3850'}}},yAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'line',smooth:true,data:mon.map(m=>m.count),areaStyle:{color:'rgba(79,140,255,.15)'},lineStyle:{color:'#4f8cff'},itemStyle:{color:'#4f8cff'}}]});
+
+  words('cSelfWords', st.self_words, '#4f8cff');
+  words('cOtherWords', st.other_words, '#7c5cff');
+
+  // 表情
+  const emo = (st.emojis||[]).map(([k,v])=>({name:k,value:v}));
+  set('cEmojis', emo.length ? {tooltip:{},grid:{left:60,right:20,top:16,bottom:20},xAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},yAxis:{type:'category',data:emo.map(e=>e.name),axisLabel:{color:'#8fa1c0'}},series:[{type:'bar',data:emo.map(e=>e.value),itemStyle:{color:'#ffb454',borderRadius:[0,4,4,0]}}]}
+    : {title:{text:'暂无表情数据',textStyle:{color:'#8fa1c0',fontSize:12},left:'center',top:'middle'}});
+
+  // 词云（用散点近似：气泡）
+  const wd = [...(st.self_words||[]).slice(0,30), ...(st.other_words||[]).slice(0,30)];
+  const cloud = wd.map(([w,v],i)=>({name:w,value:v*10,itemStyle:{color: i%2? 'rgba(124,92,255,.8)':'rgba(79,140,255,.8)'}}));
+  set('cWordCloud', cloud.length ? {series:[{type:'pie',radius:['0%','75%'],center:['50%','50%'],data:cloud,label:{show:false},emphasis:{scale:false}}]}
+    : {title:{text:'暂无数据',textStyle:{color:'#8fa1c0',fontSize:12},left:'center',top:'middle'}});
+}
+
+function words(id, data, color){
+  const arr = data||[];
+  set(id, arr.length ? {tooltip:{},grid:{left:70,right:20,top:16,bottom:20},xAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},yAxis:{type:'category',data:arr.map(x=>x[0]),axisLabel:{color:'#8fa1c0'},inverse:true},series:[{type:'bar',data:arr.map(x=>x[1]),itemStyle:{color,borderRadius:[0,4,4,0]}}]}
+    : {title:{text:'暂无数据',textStyle:{color:'#8fa1c0',fontSize:12},left:'center',top:'middle'}});
+}
+
+// ---------------- 情感 ----------------
+function renderSentiment(se, st){
+  $('seCards').innerHTML = [
+    ['情感倾向度', (se.sentiment||0).toFixed(1), se.sentiment>=0?'green':'red'],
+    ['积极消息', fmt(se.pos), 'green'],
+    ['消极消息', fmt(se.neg), 'red'],
+    ['中性消息', fmt(se.neutral), ''],
+    ['强烈情绪占比', (se.n? Math.round(se.strong/se.n*100):0)+'%', 'yellow'],
+    ['我的情感分', (se.self_score||0).toFixed(1), se.self_score>=0?'green':'red'],
+    ['对方情感分', (se.other_score||0).toFixed(1), se.other_score>=0?'green':'red'],
+    ['情绪波动指数', (se.volatility||0).toFixed(1), 'yellow'],
+    ['亲密度', (se.intimacy||0).toFixed(0)+' / 100', 'green'],
+    ['有效文本', fmt(se.n), ''],
+  ].map(([k,v,cls]) => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('');
+
+  // 仪表
+  const sc = se.sentiment||0;
+  set('sGauge', {series:[{type:'gauge',min:-100,max:100,progress:{show:true,width:14,itemStyle:{color:sc>=0?'#3ddc84':'#ff5c5c'}},axisLine:{lineStyle:{width:14,color:[[1,'#2c3850']]}},axisTick:{show:false},splitLine:{show:false},axisLabel:{show:false},pointer:{width:5,itemStyle:{color:'#e6ecf7'}},anchor:{show:true,size:14},title:{show:true,offsetCenter:[0,'42%'],color:'#8fa1c0',fontSize:13},detail:{valueAnimation:true,formatter:'{value}',color:'#e6ecf7',fontSize:26,offsetCenter:[0,'-4%']},data:[{value:Math.round(sc),name:'情感倾向'}]}]});
+
+  // 占比
+  set('sRatio', {tooltip:{trigger:'item'},legend:{bottom:0,textStyle:{color:'#8fa1c0'}},series:[{type:'pie',radius:['40%','68%'],center:['50%','42%'],data:[{name:'积极',value:se.pos,itemStyle:{color:'#3ddc84'}},{name:'消极',value:se.neg,itemStyle:{color:'#ff5c5c'}},{name:'中性',value:se.neutral,itemStyle:{color:'#8fa1c0'}}]}]});
+
+  // 月度序列
+  const mon = se.months||{};
+  const mk = Object.keys(mon).sort();
+  set('sSeries', {tooltip:{trigger:'axis'},grid:{left:50,right:16,top:20,bottom:26},xAxis:{type:'category',data:mk,axisLabel:{color:'#8fa1c0'},axisLine:{lineStyle:{color:'#2c3850'}}},yAxis:{type:'value',min:-60,max:60,axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'line',smooth:true,data:mk.map(m=>Math.round(mon[m])),areaStyle:{color:'rgba(124,92,255,.15)'},lineStyle:{color:'#7c5cff'},itemStyle:{color:'#7c5cff'}}]});
+
+  // 热力图
+  heatmap(se);
+
+  // 雷达
+  const emo = se.emotions||{};
+  const emoKey = ['乐','好','怒','哀','惧','恶','惊'];
+  const maxV = Math.max(1, ...emoKey.map(k=>emo[k]||0));
+  set('sEmoRadar', {tooltip:{},radar:{indicator:emoKey.map(k=>({name:k,max:maxV})),radius:'62%',axisName:{color:'#e6ecf7'},splitLine:{lineStyle:{color:'#2c3850'}},splitArea:{areaStyle:{color:['rgba(32,42,64,.4)','rgba(26,34,51,.4)']}},axisLine:{lineStyle:{color:'#2c3850'}}},series:[{type:'radar',data:[{value:emoKey.map(k=>emo[k]||0),name:'情绪分布',areaStyle:{color:'rgba(79,140,255,.25)'},lineStyle:{color:'#4f8cff'},itemStyle:{color:'#4f8cff'}}]}]});
+
+  // 情绪饼
+  set('sEmoPie', {tooltip:{trigger:'item'},legend:{bottom:0,type:'scroll',textStyle:{color:'#8fa1c0'}},series:[{type:'pie',radius:['38%','66%'],center:['50%','40%'],data:emoKey.map(k=>({name:k,value:emo[k]||0}))}]});
+
+  // 情绪词
+  const ew = se.emotion_words||[];
+  set('sEmoWords', ew.length ? {tooltip:{},grid:{left:70,right:20,top:16,bottom:20},xAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},yAxis:{type:'category',data:ew.map(x=>x[0]).reverse(),axisLabel:{color:'#8fa1c0'}},series:[{type:'bar',data:ew.map(x=>x[1]).reverse(),itemStyle:{color:'#ffb454',borderRadius:[0,4,4,0]}}]}
+    : {title:{text:'暂无数据',textStyle:{color:'#8fa1c0',fontSize:12},left:'center',top:'middle'}});
+
+  // 情绪词云
+  const ec = (se.emotion_words||[]).slice(0,30).map(([w,v])=>({name:w,value:v*8,itemStyle:{color:'rgba(255,180,84,.85)'}}));
+  set('sEmoCloud', ec.length ? {series:[{type:'pie',radius:['0%','72%'],data:ec,label:{show:false}}]}
+    : {title:{text:'暂无数据',textStyle:{color:'#8fa1c0',fontSize:12},left:'center',top:'middle'}});
+
+  // 双方对比
+  set('sCompare', {tooltip:{},legend:{bottom:0,textStyle:{color:'#8fa1c0'}},radar:{indicator:[{name:'积极度',max:100},{name:'消息量',max:100},{name:'情感深度',max:100},{name:'互动性',max:100}],radius:'58%',axisName:{color:'#e6ecf7'},splitLine:{lineStyle:{color:'#2c3850'}},splitArea:{areaStyle:{color:['rgba(32,42,64,.4)','rgba(26,34,51,.4)']}}},series:[{type:'radar',data:[
+    {name:'我',value:[Math.max(0,(se.self_score||0)+50), st.total? Math.round(st.self/st.total*100):0, 60, st.total? Math.round(st.self/st.total*100):0],areaStyle:{color:'rgba(79,140,255,.25)'},lineStyle:{color:'#4f8cff'},itemStyle:{color:'#4f8cff'}},
+    {name:'对方',value:[Math.max(0,(se.other_score||0)+50), st.total? Math.round(st.other/st.total*100):0, 60, st.total? Math.round(st.other/st.total*100):0],areaStyle:{color:'rgba(124,92,255,.25)'},lineStyle:{color:'#7c5cff'},itemStyle:{color:'#7c5cff'}}
+  ]}]});
+
+  // 双方消息量
+  set('sVol', {tooltip:{},grid:{left:50,right:20,top:20,bottom:24},xAxis:{type:'category',data:['我','对方'],axisLabel:{color:'#8fa1c0'}},yAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'bar',data:[{value:st.self,itemStyle:{color:'#4f8cff'}},{value:st.other,itemStyle:{color:'#7c5cff'}}],barWidth:60,label:{show:true,position:'top',color:'#e6ecf7',formatter:p=>fmt(p.value)}}]});
+
+  // 强度分布（从 series 得分近似）
+  const ser = se.series||[];
+  const dist = [0,0,0,0,0,0,0];
+  for(const p of ser){ let idx = Math.min(6, Math.max(0, p.Score+3)); dist[idx]++; }
+  const distName = ['≤-3','-2','-1','0','+1','+2','≥+3'];
+  set('sStrength', {tooltip:{},grid:{left:40,right:10,top:20,bottom:24},xAxis:{type:'category',data:distName,axisLabel:{color:'#8fa1c0'}},yAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'bar',data:dist,itemStyle:{color:'#ffb454',borderRadius:[4,4,0,0]}}]});
+
+  // 时段情感
+  const hh = se.hours||[];
+  set('sHour', {tooltip:{},grid:{left:40,right:10,top:20,bottom:24},xAxis:{type:'category',data:Array.from({length:24},(_,i)=>i+'时'),axisLabel:{color:'#8fa1c0',interval:1}},yAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'bar',data:hh.map(v=>Math.round(v||0)),itemStyle:{color:function(p){return p.value>=0?'#3ddc84':'#ff5c5c'},borderRadius:[4,4,0,0]}}]});
+}
+
+async function heatmap(se){
+  let cells = hist.heat;
+  if(!cells){ const d = await api('sentiment_heatmap', {chat: curChat}); cells = d.cells||[]; hist.heat = cells; }
+  const days = [...new Set(cells.map(c=>c.date))].sort().slice(-30);
+  const data = cells.filter(c=>days.includes(c.date)).map(c=>[days.indexOf(c.date), c.hour, Math.round(c.Sum*10)/10]);
+  set('sHeat', {tooltip:{position:'top',formatter:p=>`${days[p.value[0]]} ${p.value[1]}时<br>情感: ${p.value[2]}`},grid:{left:40,right:10,top:16,bottom:60},xAxis:{type:'category',data:days,splitArea:{show:true},axisLabel:{color:'#8fa1c0',rotate:60,fontSize:10},axisLine:{lineStyle:{color:'#2c3850'}}},yAxis:{type:'category',data:Array.from({length:24},(_,i)=>i+'时'),splitArea:{show:true},axisLabel:{color:'#8fa1c0'}},visualMap:{min:-50,max:50,calculable:true,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#ff5c5c','#2c3850','#3ddc84']},textStyle:{color:'#8fa1c0'}},series:[{type:'heatmap',data,label:{show:false},itemStyle:{borderColor:'#1a2233',borderWidth:1}}]});
+}
+
+// ---------------- 双人报告 ----------------
+function renderDuo(st, se){
+  $('duoCards').innerHTML = [
+    ['亲密度', (se.intimacy||0).toFixed(0)+' / 100', 'green'],
+    ['互动节奏', (st.total? Math.round(st.self/st.total*100):50)+'% 我发起', ''],
+    ['平均回复', (st.reply_median||0).toFixed(0)+' 分钟', ''],
+    ['深夜互动', (st.hours||[]).slice(22).reduce((a,b)=>a+b,0) + (st.hours||[]).slice(0,5).reduce((a,b)=>a+b,0) + ' 条', 'yellow'],
+    ['会话跨度', fmtDays(st.first, st.last), ''],
+    ['情绪峰值', se.sentiment>=0 ? '正向' : '负向', se.sentiment>=0?'green':'red'],
+  ].map(([k,v,cls]) => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('');
+
+  set('dTempo', {tooltip:{},legend:{bottom:0,textStyle:{color:'#8fa1c0'}},grid:{left:40,right:10,top:20,bottom:60},xAxis:{type:'category',data:['我发起','对方发起'],axisLabel:{color:'#8fa1c0'}},yAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},series:[{type:'bar',data:[{value:st.self,itemStyle:{color:'#4f8cff'}},{value:st.other,itemStyle:{color:'#7c5cff'}}],barWidth:70,label:{show:true,position:'top',formatter:p=>fmt(p.value)}}]});
+
+  const night = (st.hours||[]).slice(22).concat((st.hours||[]).slice(0,6)).reduce((a,b)=>a+b,0);
+  const day = (st.total||0)-night;
+  set('dDayNight', {tooltip:{trigger:'item'},legend:{bottom:0,textStyle:{color:'#8fa1c0'}},series:[{type:'pie',radius:['38%','66%'],center:['50%','40%'],data:[{name:'白天(6-22时)',value:Math.max(0,day),itemStyle:{color:'#ffb454'}},{name:'深夜(22-6时)',value:night,itemStyle:{color:'#4f8cff'}}]}]});
+
+  set('dIntimacy', {series:[{type:'gauge',min:0,max:100,progress:{show:true,width:16,itemStyle:{color:'#3ddc84'}},axisLine:{lineStyle:{width:16,color:[[1,'#2c3850']]}},axisTick:{show:false},splitLine:{show:false},axisLabel:{show:false},pointer:{show:false},anchor:{show:false},title:{color:'#8fa1c0',fontSize:13,offsetCenter:[0,'40%']},detail:{valueAnimation:true,formatter:'{value}',color:'#e6ecf7',fontSize:28,offsetCenter:[0,0]},data:[{value:Math.round(se.intimacy||0),name:'亲密度'}]}]});
+
+  set('dVol', {series:[{type:'gauge',min:0,max:100,progress:{show:true,width:16,itemStyle:{color:'#ffb454'}},axisLine:{lineStyle:{width:16,color:[[1,'#2c3850']]}},axisTick:{show:false},splitLine:{show:false},axisLabel:{show:false},pointer:{show:false},anchor:{show:false},title:{color:'#8fa1c0',fontSize:13,offsetCenter:[0,'40%']},detail:{valueAnimation:true,formatter:'{value}',color:'#e6ecf7',fontSize:28,offsetCenter:[0,0]},data:[{value:Math.min(100,Math.round((se.volatility||0)*3)),name:'波动指数'}]}]});
+
+  // 双方词对比（横向双条）
+  const sw = (st.self_words||[]).slice(0,12).map(x=>x[0]);
+  const ow = (st.other_words||[]).slice(0,12).map(x=>x[0]);
+  const all = [...new Set([...sw, ...ow])].slice(0,14);
+  const f = (arr,w)=> (arr.find(x=>x[0]===w)||[w,0])[1];
+  set('dWords', {tooltip:{},legend:{bottom:0,textStyle:{color:'#8fa1c0'}},grid:{left:70,right:50,top:20,bottom:40},xAxis:{type:'value',axisLabel:{color:'#8fa1c0'},splitLine:{lineStyle:{color:'#232e44'}}},yAxis:{type:'category',data:all,axisLabel:{color:'#8fa1c0'}},series:[
+    {name:'我',type:'bar',data:all.map(w=>f(st.self_words,w)),itemStyle:{color:'#4f8cff'}},
+    {name:'对方',type:'bar',data:all.map(w=>-f(st.other_words,w)),itemStyle:{color:'#7c5cff'}}
+  ]});
+}
+
+function fmtDays(a,b){
+  if(!a||!b) return '—';
+  return Math.round((b-a)/86400)+' 天';
+}
+
+// ---------------- 记录分析 ----------------
+async function doSearch(){
+  const kw = $('kwInput').value.trim();
+  if(!curChat){ alert('请先选择左侧会话再搜索'); return; }
+  if(!kw){ $('hitList').innerHTML = '<div style="color:var(--tx2);padding:20px;text-align:center">请输入关键词</div>'; return; }
+  loading(true, '搜索“'+kw+'”…');
+  try{
+    const d = await api('search', {chat: curChat, q: kw});
+    loading(false);
+    const list = $('hitList');
+    if(d.error){ list.innerHTML = '<div style="color:var(--err);padding:20px;text-align:center">搜索失败：'+esc(d.error)+'</div>'; return; }
+    if(!d.hits || !d.hits.length){
+      list.innerHTML = `<div style="color:var(--tx2);padding:20px;text-align:center">在「${esc(curChat)}」中未找到「${esc(kw)}」<br><span style="font-size:11px">（仅检索文本消息；可尝试换个关键词，或到「数据」页重建索引后重试）</span></div>`;
+      return;
+    }
+    list.innerHTML = `<div style="color:var(--tx2);font-size:11px;padding-bottom:8px">找到 ${d.count} 条相关记录（最近 ${d.hits.length} 条）</div>` + d.hits.map(h => {
+      const t = new Date(h.TS*1000);
+      const txt = String(h.Content).replace(/</g,'&lt;').replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','g'), '<mark>$1</mark>');
+      return `<div class="hit"><div class="tm">${t.toLocaleString('zh-CN')}</div><span class="who ${h.Self?'':'o'}">${h.Self?'我':'对方'}</span>${txt}</div>`;
+    }).join('');
+  }catch(e){
+    loading(false);
+    $('hitList').innerHTML = '<div style="color:var(--err);padding:20px;text-align:center">搜索请求失败：'+esc(String(e))+'</div>';
+  }
+}
+async function exportJson(){
+  if(!curChat) return;
+  const d = await api('export', {chat: curChat, fmt: 'json'});
+  alert('已导出 '+fmt(d.count)+' 条 → ' + d.file);
+}
+function showImport(){
+  const p = prompt('输入聊天记录 JSONL 文件完整路径\n（或先点“自动搜索”发现微信目录）\n例：E:\\xwechat_files\\...\\chat_messages.jsonl');
+  if(!p) return;
+  loading(true, '正在导入并建立索引…');
+  api('import', {path: p}).then(async r=>{
+    loading(true, '后台导入中…');
+    const t0 = Date.now();
+    const timer = setInterval(async ()=>{
+      const s = await api('status');
+      setBar(Math.min(1, s.count/5000000));
+      $('loadingText').textContent = `导入中… 当前 ${fmt(s.count)} 条 (${((Date.now()-t0)/1000).toFixed(0)}s)`;
+      if(!s.indexing && s.count>0){ clearInterval(timer); loading(false); await loadChats(); }
+    }, 1500);
+  });
+}
+async function discover(){
+  loading(true, '正在全盘扫描微信目录…');
+  const d = await api('discover');
+  loading(false);
+  renderDiscover(d.dirs || [], d.jsonl || []);
+}
+function openDiscover(){ $('discoverModal').classList.add('show'); }
+function closeDiscover(){ $('discoverModal').classList.remove('show'); }
+function renderDiscover(dirs, jsonlFiles){
+  const bd = $('discoverList');
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const q = s => esc(s).replace(/'/g,"\\'");
+  if(!dirs.length && !jsonlFiles.length){
+    bd.innerHTML = '<div style="color:var(--tx2);padding:24px;text-align:center">未发现微信数据目录。<br>请确认微信聊天记录在本机（含迁移到其他盘符的情况），或点下方「📥 导入记录」手动输入 JSONL 路径。</div>';
+    openDiscover();
+    return;
+  }
+  let html = '';
+  for(const d of dirs){
+    const badge = d.format==='new' ? '<span class="dc-badge new">微信 4.0 新版</span>' : '<span class="dc-badge old">微信旧版</span>';
+    const acts = [];
+    if(d.jsonl && d.jsonl.length){
+      for(const j of d.jsonl.slice(0,4)){
+        acts.push(`<button class="btn" onclick="importPath('${q(j)}')">导入 ${esc(j.split(/[\\/]/).pop())}</button>`);
+      }
+      if(d.jsonl.length>4) acts.push(`<span class="dc-none">…共 ${d.jsonl.length} 个 JSONL</span>`);
+    } else {
+      acts.push('<span class="dc-none">目录内未发现 JSONL 导出（微信数据库为加密格式，可直接导入下方已导出的 JSONL 数据）</span>');
+    }
+    const accts = (d.accounts_list||[]).slice(0,6).join('、');
+    html += `<div class="dc-item"><div class="r1">${badge}<span class="dc-path">${esc(d.path)}</span></div>
+      <div class="dc-meta">账号 ${d.accounts} 个：${esc(accts)}${(d.accounts||0)>6?' 等':''} · 最近更新 ${esc(d.updated||'-')}</div>
+      <div class="dc-acts">${acts.join('')}</div></div>`;
+  }
+  for(const j of jsonlFiles){
+    const size = j.size ? fmtBytes(j.size) : '';
+    const est = j.est_lines ? `约 ${fmt(j.est_lines)} 条` : '';
+    const mtime = j.mtime ? `更新 ${esc(j.mtime)}` : '';
+    html += `<div class="dc-item"><div class="r1"><span class="dc-badge jsonl">JSONL 数据</span><span class="dc-path">${esc(j.path)}</span></div>
+      <div class="dc-meta">${size} · ${est} · ${mtime}</div>
+      <div class="dc-acts"><button class="btn" onclick="importPath('${q(j.path)}')">导入</button></div></div>`;
+  }
+  bd.innerHTML = html;
+  openDiscover();
+}
+async function importPath(p){
+  closeDiscover();
+  if(!p) return;
+  loading(true, '正在导入并建立索引…');
+  await api('import', {path: p});
+  loading(true, '后台导入中…');
+  const t0 = Date.now();
+  const timer = setInterval(async ()=>{
+    const s = await api('status');
+    setBar(Math.min(1, s.count/5000000));
+    $('loadingText').textContent = `导入中… 当前 ${fmt(s.count)} 条 (${((Date.now()-t0)/1000).toFixed(0)}s)`;
+    if(!s.indexing && s.count>0){ clearInterval(timer); loading(false); await loadChats(); }
+  }, 1500);
+}
+
+// ---------------- 训练页 ----------------
+let trainTimer = null;
+function trainExplain(){
+  const p = document.querySelector('input[name=persona]:checked').value;
+  $('trainExplain').textContent = p === 'me'
+    ? '将训练一个模仿"你"的说话方式的分身：对方的消息作为输入，你的回复作为学习目标。'
+    : '将训练一个模仿对方的分身：你的消息作为输入，对方的回复作为学习目标（会话名仅用于选取数据，不会写入任何公开产物）。';
+}
+async function loadTrainPanel(){
+  const [m, g, s, ts] = await Promise.all([
+    api('models'), api('gpu'), api('serve_status'), api('train_status')
+  ]);
+  // 会话下拉
+  const sel = $('trChat');
+  sel.innerHTML = '';
+  for(const c of chats.slice(0, 300)){
+    const o = document.createElement('option');
+    o.value = c.name; o.textContent = `${c.name}（${fmt(c.total)}条）`;
+    sel.appendChild(o);
+  }
+  // 模型下拉：本地 + 镜像
+  const ms = $('trModel');
+  ms.innerHTML = '';
+  const addOpt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; ms.appendChild(o); };
+  for(const lm of (m.local||[])) addOpt(lm.path, `📁 ${lm.name}（本地 ${lm.size_gb}GB）`);
+  for(const cm of (m.catalog||[])) addOpt(cm.id, `☁️ ${cm.name}（${cm.tier}，${cm.size_gb}GB，镜像下载）`);
+  $('modelHint').textContent = '镜像模型来自 ModelScope（国内直连）。选中后点「下载选中」，完成后自动加入本地列表。';
+  renderModelManage(m.local || []);
+  // GPU 卡
+  $('trainGpu').innerHTML = g.available ? [
+    ['显卡', g.name, ''],
+    ['总显存', (g.total_gb||0).toFixed(1)+' GB', ''],
+    ['已用', (g.used_gb||0).toFixed(1)+' GB', g.used_gb>5?'red':'yellow'],
+    ['可用', (g.free_gb||0).toFixed(1)+' GB', g.free_gb>=4?'green':'red'],
+    ['利用率', (g.util_pct||0)+'%', ''],
+    ['能否训练', g.free_gb>=4 ? '✅ 可以' : '⚠️ 显存不足', g.free_gb>=4?'green':'red'],
+  ].map(([k,v,cls])=>`<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('')
+    : '<div class="card"><div class="k">GPU</div><div class="v red">未检测到 NVIDIA 显卡</div></div>';
+  // 推理服务
+  $('trServe').innerHTML = s.online
+    ? '<span class="badge ok">在线</span> 数字分身可用'
+    : '<span class="badge off">离线</span> 训练完成后自动启动';
+  // 任务状态
+  renderTrainStatus(ts);
+  trainExplain();
+  if(!trainTimer) trainTimer = setInterval(trainPoll, 3000);
+}
+async function trainPoll(){
+  try{
+    const ts = await api('train_status');
+    renderTrainStatus(ts);
+    if(ts.running){
+      // 轮询日志
+      const lr = await fetch('/api/train_log').then(r=>r.json()).catch(()=>({log:''}));
+      if(lr.log) $('trLog').textContent = lr.log.slice(-3000);
+    }
+  }catch(e){}
+}
+function renderTrainStatus(ts){
+  $('trStage').textContent = ts.running ? ts.stage : (ts.stage==='已停止' ? '已停止' : '空闲');
+  let pct = ts.total>0 ? Math.round(ts.step/ts.total*100) : (ts.running ? 5 : 0);
+  if(ts.running && ts.persona==='download' && ts.dl_total>0 && ts.dl_size>=0){
+    pct = Math.min(100, Math.round(ts.dl_size/ts.dl_total*100));
+  }
+  $('trBar').style.width = pct+'%';
+  $('trPct').textContent = pct+'%';
+  $('trJobDesc').textContent = ts.running
+    ? (ts.persona==='download'
+      ? `下载 ${ts.chat} · ${fmt(ts.dl_size||0)}MB${ts.dl_total>0?' / '+fmt(ts.dl_total)+'MB ('+pct+'%)':''}${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}`
+      : `${ts.chat} / ${ts.persona==='other'?'对方':'我'} / step ${ts.step}/${ts.total} / loss ${ts.loss}`)
+    : (ts.stage ? ts.stage : '无');
+  $('trInfo').textContent = ts.running
+    ? `开始于 ${ts.started} · 输出: ${ts.out||''}`
+    : (ts.dl_size ? `最近一次下载: ${fmt(ts.dl_size)}MB${ts.dl_total>0?' / '+fmt(ts.dl_total)+'MB':''}${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}` : '');
+}
+async function startTrain(){
+  const chat = $('trChat').value;
+  const persona = document.querySelector('input[name=persona]:checked').value;
+  let model = $('trModel').value;
+  const custom = $('trModelPath').value.trim();
+  if(custom) model = custom;
+  if(!model){ alert('请先选择或输入基础模型路径'); return; }
+  const epochs = $('trEpochs').value || 2;
+  const samples = $('trSamples').value || 15000;
+  const lr = $('trLr').value || '0.0002';
+  const port = $('trPort').value || 5000;
+  if(!confirm(`开始训练？\n\n目标会话: ${chat}\n分身: ${persona==='other'?'对方':'我'}\n模型: ${model}\nepochs=${epochs} samples=${samples} lr=${lr}\n\n训练将占用显卡（预计数小时），期间界面可继续使用其他功能。`)) return;
+  loading(true, '启动训练任务…');
+  const r = await api('train_start', {chat, persona, model, out:'', epochs, samples, lr, port});
+  loading(false);
+  if(r.error){ alert('启动失败：'+r.error); return; }
+  $('trLog').textContent = '训练任务已启动，等待输出…';
+}
+async function stopTrain(){
+  if(!confirm('确定停止当前训练任务？')) return;
+  await api('train_stop');
+  $('trStage').textContent = '已停止';
+}
+async function dlModel(){
+  const id = $('trModel').value;
+  if(!id || id.indexOf('/') < 0){ alert('请先在下拉框选择一个镜像模型（含 / 的项）'); return; }
+  loading(true, '后台下载模型 '+id+' …');
+  const r = await api('model_download', {id});
+  loading(false);
+  if(r.error){ alert(r.error); return; }
+  $('trLog').textContent = '开始下载 ' + id + '，完成后自动刷新模型列表。\n下载进度与速度实时显示在任务状态区（大型模型需 10-40 分钟）。';
+}
+// 切到训练页时加载
+let trainLoaded = false;
+function onTrainTab(){
+  if(!trainLoaded){ trainLoaded = true; loadTrainPanel(); }
+  else { trainPoll(); api('gpu').then(g=>{ /* 刷新GPU卡 */ }); }
+}
+// 在 switchTab 中挂钩
+const _origSwitch = switchTab;
+switchTab = function(p){
+  _origSwitch(p);
+  if(p === 'train') onTrainTab();
+  if(p === 'twin') loadTwinPanel();
+  if(p === 'data') loadDataPanel();
+};
+
+// ---------------- 数据页（数据源 / 清洗） ----------------
+async function loadDataPanel(){
+  const s = await api('sources');
+  const totalBytes = (s.sources||[]).reduce((a,b)=>a+(b.size||0),0);
+  $('dataCards').innerHTML = [
+    ['索引消息数', fmt(s.count||0), 'green'],
+    ['数据源数量', (s.sources||[]).length, ''],
+    ['数据总量', fmtBytes(totalBytes), ''],
+    ['当前来源', (s.source||'—').split('|').length>1 ? (s.source||'').split('|').length+' 个文件' : '—', ''],
+  ].map(([k,v,cls]) => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('');
+  const list = $('dataSrcList');
+  if(!s.sources || !s.sources.length){
+    list.innerHTML = '<div style="color:var(--tx2);padding:12px;font-size:12px">未找到 JSONL 数据源。可通过「自动搜索」定位微信目录，或在微信 PC 端导出记录后放入 data/ 目录。</div>';
+    return;
+  }
+  list.innerHTML = s.sources.map(x => `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 12px;background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:8px;font-size:12px;flex-wrap:wrap">
+      <div style="flex:1;word-break:break-all">${esc(x.path)}</div>
+      <div style="color:var(--tx2);white-space:nowrap">${fmtBytes(x.size)} · 约 ${fmt(x.est_lines)} 条 · ${esc(x.mtime||'')}</div>
+    </div>`).join('');
+}
+async function reindexAll(){
+  if(!confirm('将全部数据源合并去重并重建索引（152 万条约需数分钟，期间查询暂不可用）。继续？')) return;
+  loading(true, '正在合并去重重建索引…');
+  const r = await api('reindex');
+  loading(false);
+  if(r.error){ alert(r.error); return; }
+  const t0 = Date.now();
+  const timer = setInterval(async ()=>{
+    const s = await api('status');
+    $('loadingText').textContent = `重建中… 当前 ${fmt(s.count)} 条 (${((Date.now()-t0)/1000).toFixed(0)}s)`;
+    if(!s.indexing && s.count>0){ clearInterval(timer); loading(false); await loadChats(); loadDataPanel(); }
+  }, 1500);
+}
+
+// ---------------- 微信加密库自动解密 ----------------
+async function wxDecrypt(){
+  $('wxDecryptBox').style.display = 'block';
+  $('wxDecryptStage').textContent = '启动解密任务…';
+  const r = await api('wechat_decrypt');
+  if(r.error){ $('wxDecryptMsg').textContent = '❌ '+r.error; return; }
+  $('wxDecryptMsg').textContent = r.msg;
+  const t = setInterval(async ()=>{
+    const s = await api('wechat_decrypt_status');
+    $('wxDecryptStage').textContent = s.stage + (s.key_found ? ' 🔑 已找到密钥' : '');
+    $('wxDecryptBar').style.width = (s.progress||0)+'%';
+    $('wxDecryptPct').textContent = (s.progress||0)+'%';
+    $('wxDecryptMsg').textContent = s.message || '';
+    if(!s.running){ clearInterval(t); if(s.added>0){ await loadChats(); loadDataPanel(); } }
+  }, 1200);
+}
+
+// ---------------- 数字分身：推理服务手动控制 ----------------
+async function loadTwinPanel(){
+  const [ms, ss] = await Promise.all([api('models'), api('serve_status')]);
+  const sel = $('twinModel');
+  sel.innerHTML = '';
+  if(!ms.local || !ms.local.length){
+    const o = document.createElement('option'); o.value=''; o.textContent='（无本地模型，请到训练页下载）'; sel.appendChild(o);
+  } else {
+    for(const lm of ms.local){
+      const o = document.createElement('option'); o.value = lm.path; o.textContent = `📁 ${lm.name}（${lm.size_gb}GB）`; sel.appendChild(o);
+    }
+  }
+  $('twinServeNote').textContent = ss.online ? '服务在线：可直接对话' : '服务离线：选择模型后点「启动服务」';
+  pollServeLog();
+}
+async function startServe(){
+  const model = $('twinModel').value;
+  if(!model){ alert('请先在模型下拉选择一个本地模型（训练页可下载）'); return; }
+  const port = $('twinPort').value || 5000;
+  loading(true, '启动推理服务…（首次加载模型约需 1-2 分钟）');
+  const r = await api('serve_start', {model, port});
+  loading(false);
+  if(r.error){ alert('启动失败：'+r.error); return; }
+  $('twinServeNote').textContent = `启动中… 模型 ${r.model}（端口 ${r.port}）`;
+  setTimeout(pollServeLog, 3000);
+}
+async function stopServe(){
+  if(!confirm('停止推理服务？')) return;
+  await api('serve_stop');
+  $('twinServeNote').textContent = '服务已停止';
+  $('twinState').textContent = '未连接'; $('twinState').className = 'badge off';
+}
+async function pollServeLog(){
+  const d = await api('serve_log').catch(()=>({log:''}));
+  if(d.log) $('serveLog').textContent = d.log.slice(-2000);
+}
+
+// ---------------- 训练页：本地模型管理 ----------------
+function renderModelManage(ms){
+  const box = $('modelManage');
+  if(!ms || !ms.length){ box.innerHTML = '<span style="color:var(--tx2)">暂无本地模型</span>'; return; }
+  box.innerHTML = '<div style="margin-bottom:6px;color:var(--tx2)">本地模型管理（删除不可恢复）：</div>' + ms.map((m,i)=>`
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <span style="flex:1;font-size:12px;word-break:break-all;min-width:140px">📁 ${esc(m.name)}（${m.size_gb}GB）</span>
+      <input id="rmName${i}" placeholder="新名字" style="width:130px;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:5px;font-size:11px">
+      <button class="btn" style="padding:4px 10px;font-size:11px" onclick="renameModel('${q(esc(m.path))}', ${i})">重命名</button>
+      <button class="btn" style="padding:4px 10px;font-size:11px;background:var(--card2);border:1px solid var(--err);color:var(--err)" onclick="deleteModel('${q(esc(m.path))}')">删除</button>
+    </div>`).join('');
+}
+async function renameModel(path, i){
+  const name = $('rmName'+i).value.trim();
+  if(!name){ alert('请输入新名字'); return; }
+  const r = await api('model_rename', {path, name});
+  if(r.error){ alert(r.error); return; }
+  alert('已重命名，刷新模型列表');
+  loadTrainPanel();
+}
+async function deleteModel(path){
+  if(!confirm('确定删除该模型目录？此操作不可恢复！\n\n' + path)) return;
+  const r = await api('model_delete', {path});
+  if(r.error){ alert(r.error); return; }
+  alert('已删除');
+  loadTrainPanel();
+}
+
+// ---------------- 情感消息明细 ----------------
+async function loadEmoMsgs(){
+  if(!curChat){ alert('请先选择左侧会话'); return; }
+  const kind = $('emoKind').value;
+  $('emoMsgInfo').textContent = '加载中…';
+  const d = await api('sentiment_msgs', {chat: curChat, kind, limit: 200});
+  const list = $('emoMsgList');
+  $('emoMsgInfo').textContent = `共 ${d.count} 条（按时间倒序）`;
+  if(!d.msgs || !d.msgs.length){ list.innerHTML = '<div style="color:var(--tx2);padding:20px;text-align:center">该会话暂无此类消息（文本消息中）</div>'; return; }
+  list.innerHTML = d.msgs.map(m => {
+    const t = new Date(m.ts*1000);
+    return `<div class="hit"><div class="tm">${t.toLocaleString('zh-CN')}</div><span class="who ${m.self?'':'o'}">${m.self?'我':'对方'}</span>${esc(m.content)}</div>`;
+  }).join('');
+}
+
+// ---------------- 工具：字节格式化 ----------------
+function fmtBytes(n){
+  if(!n) return '0 B';
+  const u = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  while(n >= 1024 && i < u.length-1){ n /= 1024; i++; }
+  return n.toFixed(i?1:0)+' '+u[i];
+}
+
+// ---------------- 数字分身 ----------------
+let twinBusy = false;
+async function sendTwin(){
+  if(twinBusy) return;
+  const input = $('twinInput');
+  const txt = input.value.trim();
+  if(!txt) return;
+  input.value = '';
+  addMsg('me', txt);
+  twinBusy = true;
+  $('twinState').textContent = '思考中…';
+  $('twinState').className = 'badge off';
+  try{
+    const r = await fetch('/api/twin', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({msg: txt, chat: curChat})});
+    const d = await r.json();
+    if(d.reply){
+      // 分身可一次连发 1-8 条短消息（微信风格）
+      const list = Array.isArray(d.replies) && d.replies.length>1 ? d.replies : [d.reply];
+      let delay = 0;
+      list.forEach((m, i) => {
+        setTimeout(()=>{ addMsg('ai', m); }, delay);
+        delay += 350 + Math.min(1200, m.length*8);
+      });
+      setTimeout(()=>{ $('twinState').textContent = '已连接'; $('twinState').className = 'badge ok'; }, delay);
+    }
+    else if(d.error){ addMsg('ai', '⚠️ '+d.error); $('twinState').textContent = '未连接'; $('twinState').className = 'badge off'; }
+  }catch(e){
+    addMsg('ai', '⚠️ 分身服务未启动。请在 Python 环境中运行推理服务。');
+    $('twinState').textContent = '未连接'; $('twinState').className = 'badge off';
+  }
+  twinBusy = false;
+}
+function addMsg(who, txt){
+  const box = $('msgBox');
+  const div = document.createElement('div');
+  div.className = 'msg ' + who;
+  if(who==='ai') div.innerHTML = '<div class="tag">AI 分身</div>' + esc(txt).replace(/\n/g,'<br>');
+  else div.textContent = txt;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ---------------- 工具 ----------------
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmt(n){ if(n>=1e8) return (n/1e8).toFixed(1)+'亿'; if(n>=1e4) return (n/1e4).toFixed(1)+'万'; return String(n); }
+function set(id, opt){
+  if(!charts[id]) charts[id] = echarts.init($(id));
+  charts[id].setOption(opt, true);
+}
+window.addEventListener('resize', ()=>{ Object.values(charts).forEach(c=>c.resize()); });
+
+init();
+</script>
+</body>
+</html>

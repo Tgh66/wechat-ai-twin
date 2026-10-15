@@ -1,0 +1,7 @@
+# pip 国内镜像列表（按顺序尝试；最后一个为官方源兜底）
+# 每行一个镜像 URL，程序会逐个测试直到安装成功
+https://pypi.tuna.tsinghua.edu.cn/simple
+https://mirrors.aliyun.com/pypi/simple/
+https://mirrors.cloud.tencent.com/pypi/simple/
+https://mirrors.huaweicloud.com/repository/pypi/simple/
+https://pypi.org/simple
