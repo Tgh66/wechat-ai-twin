@@ -7,6 +7,7 @@ venv/
 *.jsonl
 *.safetensors
 chats.db*
+wechatauto_logs/
 
 # 构建产物
 *.exe

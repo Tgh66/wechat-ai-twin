@@ -6,16 +6,19 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	_ "modernc.org/sqlite"
@@ -165,31 +168,71 @@ func findWeChatProcess() (uint32, string) {
 	return 0, ""
 }
 
-// readProcMemory 读取进程所有可读内存（分块），返回原始字节
-func readProcMemory(pid uint32, progress func(doneMB int)) ([]byte, error) {
+// extractKeysFromProcess 流式读取进程内存提取密钥候选
+// 分块 64MB 扫描（内存峰值 = 块大小 + 重叠区，避免整读数 GB 内存导致死机）
+func extractKeysFromProcess(pid uint32, progress func(doneMB int)) ([]string, error) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, pid)
 	if err != nil {
 		return nil, err
 	}
 	defer windows.CloseHandle(h)
-	var buf []byte
-	var addr uintptr
+
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		s = strings.ToLower(s)
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	chunk := int64(1024 * 1024)     // 1MB/块（Windows 单次 ReadProcessMemory 大缓冲易失败，小块稳妥）
+	overlap := 2 * 1024 * 1024      // 跨块重叠区（保证特征/hex 不被切断）
+	var overflow []byte
 	var totalMB int
+	var lastReported int
+	addr := uintptr(0)
 	for {
 		var mi windows.MemoryBasicInformation
-		err := windows.VirtualQueryEx(h, addr, &mi, uintptr(unsafe.Sizeof(mi)))
-		if err != nil {
+		if err := windows.VirtualQueryEx(h, addr, &mi, uintptr(unsafe.Sizeof(mi))); err != nil {
 			break
 		}
-		if mi.State == windows.MEM_COMMIT && mi.Protect == windows.PAGE_READWRITE && mi.RegionSize > 0 {
-			chunk := make([]byte, mi.RegionSize)
-			var read uintptr
-			if windows.ReadProcessMemory(h, mi.BaseAddress, &chunk[0], uintptr(len(chunk)), &read) == nil && read > 0 {
-				buf = append(buf, chunk[:read]...)
-				totalMB += int(read) / 1024 / 1024
-				if progress != nil && totalMB%512 == 0 {
-					progress(totalMB)
+		prot := mi.Protect & 0xFF
+		readable := mi.State == windows.MEM_COMMIT &&
+			(prot == windows.PAGE_READWRITE || prot == windows.PAGE_EXECUTE_READWRITE ||
+				prot == windows.PAGE_WRITECOPY || prot == windows.PAGE_EXECUTE_WRITECOPY)
+		if readable && mi.RegionSize > 0 {
+			base := mi.BaseAddress
+			remaining := int64(mi.RegionSize)
+			for remaining > 0 {
+				sz := remaining
+				if sz > chunk {
+					sz = chunk
 				}
+				buf := make([]byte, sz)
+				var nread uintptr
+				if err := windows.ReadProcessMemory(h, base, &buf[0], uintptr(len(buf)), &nread); err == nil && nread > 0 {
+					data := buf[:nread]
+					// 与上一块尾部拼接，避免跨块切断
+					full := data
+					if len(overflow) > 0 {
+						full = append(append([]byte{}, overflow...), data...)
+					}
+					scanMemForKeys(full, add)
+					// 保留尾部用于下一块
+					if int64(len(data)) >= int64(overlap) {
+						overflow = append([]byte{}, data[len(data)-overlap:]...)
+					} else {
+						overflow = append([]byte{}, data...)
+					}
+					totalMB += int(nread) / 1024 / 1024
+					if progress != nil && totalMB-lastReported >= 128 {
+						lastReported = totalMB
+						progress(totalMB)
+					}
+				}
+				base += uintptr(sz)
+				remaining -= sz
 			}
 		}
 		addr = mi.BaseAddress + mi.RegionSize
@@ -197,7 +240,88 @@ func readProcMemory(pid uint32, progress func(doneMB int)) ([]byte, error) {
 			break
 		}
 	}
-	return buf, nil
+	if progress != nil && totalMB-lastReported > 0 {
+		progress(totalMB)
+	}
+	return out, nil
+}
+
+// scanMemForKeys 在内存块中提取密钥候选（多形态覆盖微信 3.x/4.0）：
+// ① 特征字符串（xwechat_files/db_storage/WeChat Files）邻近窗口：
+//    - 32 字节 hex（每窗口限 6，微信 4.0 key 的 hex 变体之一）
+//    - 64 字符 hex 全量提取（微信 4.0/3.x key 常见形态）
+//    - "i"+56/64 hex 前缀形态（社区报告的微信 4.0 存储变体）
+// ② 全块 64 字符 hex 兜底（限 300，3.x 备用）
+func scanMemForKeys(mem []byte, add func(string)) {
+	const nearby = 1536
+	hex64cnt := 0
+	hex64Done := false
+	hex64Pref := regexp.MustCompile(`(?i)i[0-9a-f]{64}`)
+	hex56Pref := regexp.MustCompile(`(?i)i[0-9a-f]{56}`)
+	for _, feat := range []string{"xwechat_files", "db_storage", "WeChat Files", "wechat_files"} {
+		idx := 0
+		for {
+			i := bytes.Index(mem[idx:], []byte(feat))
+			if i < 0 {
+				break
+			}
+			start := idx + i
+			lo := start - nearby
+			if lo < 0 {
+				lo = 0
+			}
+			hi := start + len(feat) + nearby
+			if hi > len(mem) {
+				hi = len(mem)
+			}
+			window := mem[lo:hi]
+			// 32-hex（邻近优先，限量）
+			got := 0
+			for _, m := range hex32Re.FindAll(window, -1) {
+				if len(m) == 32 {
+					add(string(m))
+					got++
+					if got >= 6 {
+						break
+					}
+				}
+			}
+			// 'i' 前缀 64/56-hex（去前缀后取 64/56 hex）
+			for _, m := range hex64Pref.FindAll(window, -1) {
+				if len(m) == 65 {
+					add(string(m[1:]))
+				}
+			}
+			for _, m := range hex56Pref.FindAll(window, -1) {
+				if len(m) == 57 {
+					add(string(m[1:]))
+				}
+			}
+			// 64-hex（特征窗口内全量）
+			for _, m := range hex64Re.FindAll(window, -1) {
+				if len(m) == 64 {
+					add(string(m))
+					hex64cnt++
+					if hex64cnt >= 300 {
+						hex64Done = true
+						break
+					}
+				}
+			}
+			idx = start + len(feat)
+		}
+	}
+	if !hex64Done {
+		for _, m := range hex64Re.FindAll(mem, -1) {
+			if len(m) == 64 {
+				add(string(m))
+				hex64cnt++
+				if hex64cnt >= 300 {
+					break
+				}
+			}
+		}
+	}
 }
 
 var hex64Re = regexp.MustCompile(`(?i)[0-9a-f]{64}`)
@@ -263,16 +387,81 @@ func extractKeyCandidates(mem []byte) []string {
 	return out
 }
 
-// verifyKeyAgainstDBs 用候选密钥解密任一 message 库第一页验证
+// verifyKeyAgainstDBs 用候选密钥解密消息库第一页验证
+// 微信同账号所有库使用同一密钥：仅验证第一个消息库即可（避免逐候选遍历 20+ 库的 I/O 与计算开销）
 func verifyKeyAgainstDBs(key string, dbs []EncryptedDB) bool {
 	for _, db := range dbs {
 		if db.Kind == "message" {
 			if _, _, ok := tryDecryptFirstPage(db.Path, key); ok {
 				return true
 			}
+			return false
 		}
 	}
 	return false
+}
+
+// verifyKeysParallel 并行验证候选密钥（CPU 密集 PBKDF2，并行显著提速；命中即停）
+func verifyKeysParallel(cands []string, dbs []EncryptedDB, progress func(done, total int)) string {
+	total := len(cands)
+	if total == 0 {
+		return ""
+	}
+	// 去重
+	seen := map[string]bool{}
+	uniq := []string{}
+	for _, c := range cands {
+		if !seen[c] {
+			seen[c] = true
+			uniq = append(uniq, c)
+		}
+	}
+	total = len(uniq)
+	const workers = 8
+	results := make(chan string, 1)
+	done := make(chan struct{})
+	verified := int64(0)
+
+	go func() {
+		idx := 0
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					mu.Lock()
+					if idx >= len(uniq) {
+						mu.Unlock()
+						return
+					}
+					c := uniq[idx]
+					idx++
+					mu.Unlock()
+					if verifyKeyAgainstDBs(c, dbs) {
+						select {
+						case results <- c:
+						default:
+						}
+						return
+					}
+					if progress != nil {
+						n := atomic.AddInt64(&verified, 1)
+						progress(int(n), total)
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case k := <-results:
+		return k
+	case <-done:
+		return ""
+	}
 }
 
 // ---------------- 消息提取（解密后明文库） ----------------
@@ -609,83 +798,82 @@ func runDecryptFlow() {
 		return
 	}
 
-	// 2) 提取密钥（需微信运行）
-	setDecrypt("提取微信密钥", 12, "请保持微信运行中（密钥需从微信进程内存提取）…")
+	// 2) 检查微信进程（解密引擎需要微信运行中提取密钥）
 	pid, pname := findWeChatProcess()
 	if pid == 0 {
 		setDecrypt("未检测到微信进程", 100, "未找到微信进程（Weixin.exe / WeChat.exe）。请先登录微信再重试")
 		return
 	}
-	setDecrypt("读取微信进程内存", 15, fmt.Sprintf("进程: %s (PID %d)，正在扫描内存寻找密钥…", pname, pid))
-	mem, err := readProcMemory(pid, func(doneMB int) {
-		setDecrypt("读取内存", 15+doneMB/100, fmt.Sprintf("已读取 %d MB 内存…", doneMB))
-	})
-	if err != nil || len(mem) == 0 {
-		setDecrypt("内存读取失败", 100, "无法读取微信进程内存："+fmt.Sprintf("%v", err))
-		return
-	}
-	cands := extractKeyCandidates(mem)
-	mem = nil // 释放大内存
-	setDecrypt("验证密钥", 20, fmt.Sprintf("提取到 %d 个候选密钥，正在验证…", len(cands)))
-	var key string
-	verified := 0
-	for _, c := range cands {
-		if verifyKeyAgainstDBs(c, msgs) {
-			key = c
-			break
-		}
-		verified++
-		if verified%10 == 0 {
-			setDecrypt("验证密钥", 20+verified*2, fmt.Sprintf("已尝试 %d/%d 个候选…", verified, len(cands)))
-		}
-	}
-	if key == "" {
-		setDecrypt("密钥验证失败", 100, "未能从微信进程提取到有效密钥（微信版本差异或权限不足）。可尝试：以管理员身份运行本程序后重试")
-		return
-	}
-	decryptJob.mu.Lock()
-	decryptJob.Key = key
-	decryptJob.mu.Unlock()
-	setDecrypt("密钥已确认", 25, "密钥提取成功，开始解密…")
 
-	// 3) 解密 contact（昵称映射）
-	contactsMap := map[string]string{}
-	for i, cd := range contacts {
-		plain := filepath.Join(dataDir, "wx_decrypted", safeName(cd.Acct)+"_contact.db")
-		os.MkdirAll(filepath.Dir(plain), 0755)
-		if _, err := decryptSQLCipherDB(cd.Path, key, plain); err == nil {
-			if m, err := extractContactsFromDecrypted(plain); err == nil && len(m) > 0 {
-				for k, v := range m {
-					contactsMap[k] = v
+	// 3) 调用 Python 解密引擎（wechatauto-replica：进程内提取密钥 → 解密全部消息库 → 导出 JSONL）
+	py := findVenvPython()
+	if py == "" {
+		setDecrypt("缺少 Python 环境", 100, "未找到 ai-twin venv Python（wechatauto-replica 依赖）。请检查安装")
+		return
+	}
+	script := filepath.Join(wd, "scripts", "decrypt_wechat.py")
+	jsonl := filepath.Join(dataDir, "wechat_decrypt.jsonl")
+	os.Remove(jsonl)
+	setDecrypt("提取微信密钥", 15, fmt.Sprintf("调用解密引擎（%s PID %d），从进程提取密钥并解密全部消息库…", pname, pid))
+	cmd := exec.Command(py, script, "--out", jsonl)
+	cmd.Dir = wd
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		setDecrypt("解密引擎启动失败", 100, "无法启动解密引擎："+err.Error())
+		return
+	}
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		setDecrypt("解密引擎启动失败", 100, "无法启动解密引擎："+err.Error())
+		return
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
+	var total int64
+	keyFound := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[PROGRESS]") {
+			body := strings.TrimPrefix(line, "[PROGRESS]")
+			fields := parseKV(body)
+			switch fields["stage"] {
+			case "keys":
+				if fields["status"] == "ok" {
+					keyFound = "yes"
+					setDecrypt("密钥提取成功", 20, fmt.Sprintf("账号 %s 全部 %s 个库密钥已就绪", fields["account"], fields["keys"]))
+				}
+			case "sender_index":
+				setDecrypt("读取发送者索引", 25, "正在读取发送者映射（message_resource.db）…")
+			case "nickname":
+				setDecrypt("读取联系人昵称", 28, "正在读取联系人昵称映射…")
+			default:
+				if dbName := fields["db"]; dbName != "" {
+					setDecrypt("解密消息库", 30+int(total*40/10000000), fmt.Sprintf("正在解密 %s…（已导出 %d 条）", dbName, total))
 				}
 			}
-		}
-		setDecrypt("解密联系人库", 30+i*3, fmt.Sprintf("%d/%d 联系人库", i+1, len(contacts)))
-	}
-
-	// 4) 解密消息库 → JSONL
-	os.Remove(filepath.Join(dataDir, "wechat_decrypt.jsonl"))
-	var total int64
-	for i, md := range msgs {
-		plain := filepath.Join(dataDir, "wx_decrypted", safeName(md.Acct)+"_msg_"+fmt.Sprintf("%d", i)+".db")
-		os.MkdirAll(filepath.Dir(plain), 0755)
-		setDecrypt("解密消息库", 40+(i*50)/len(msgs), fmt.Sprintf("解密 %s (%.0f MB)…", filepath.Base(md.Path), float64(md.Size)/1e6))
-		if _, err := decryptSQLCipherDB(md.Path, key, plain); err != nil {
-			continue
-		}
-		n, err := extractMsgsFromDecrypted(plain, contactsMap)
-		if err == nil {
-			total += n
-			setDecrypt("提取消息", 40+((i+1)*50)/len(msgs), fmt.Sprintf("库 %d/%d 已提取 %d 条（累计 %d）", i+1, len(msgs), n, total))
+		} else if strings.HasPrefix(line, "[DONE]") {
+			total = parseTotal(line)
+			setDecrypt("导出完成", 90, fmt.Sprintf("解密导出完成，共 %d 条消息", total))
+		} else if strings.HasPrefix(line, "[ERROR]") {
+			setDecrypt("解密失败", 100, strings.TrimSpace(strings.TrimPrefix(line, "[ERROR]")))
+			return
 		}
 	}
-	// 5) 合并进索引
-	if total == 0 {
-		setDecrypt("未提取到消息", 100, "解密成功但未提取到消息记录（请检查微信版本兼容性）")
+	cmd.Wait()
+	if keyFound == "" {
+		setDecrypt("密钥提取失败", 100, "未能从微信进程提取到数据库密钥。请确认微信已登录、窗口保持打开，且本程序权限不低于微信")
 		return
 	}
+	if total == 0 {
+		st, _ := os.Stat(jsonl)
+		if st == nil || st.Size() == 0 {
+			setDecrypt("未提取到消息", 100, "解密完成但未导出消息记录（请检查微信版本兼容性）")
+			return
+		}
+	}
+
+	// 4) 合并进索引
 	setDecrypt("合并去重重建索引", 95, fmt.Sprintf("新增 %d 条解密记录，正在合并进索引…", total))
-	jsonl := filepath.Join(dataDir, "wechat_decrypt.jsonl")
 	if st, err := os.Stat(jsonl); err == nil && st.Size() > 0 {
 		paths := []string{}
 		for _, s := range SourceInfos() {
@@ -695,6 +883,50 @@ func runDecryptFlow() {
 	}
 	decryptJob.mu.Lock()
 	decryptJob.Added = total
+	decryptJob.Key = "yes"
 	decryptJob.mu.Unlock()
-	setDecrypt("完成", 100, fmt.Sprintf("解密导入完成：新增 %d 条聊天记录，已在「数据」页看到并用于全部分析", total))
+	setDecrypt("完成", 100, fmt.Sprintf("解密导入完成：新增 %d 条聊天记录，已合并进索引用于全部分析", total))
+}
+
+// parseKV 解析 "[PROGRESS] k=v k=v" 形式的字段
+func parseKV(s string) map[string]string {
+	out := map[string]string{}
+	for _, f := range strings.Fields(s) {
+		if i := strings.Index(f, "="); i > 0 {
+			out[f[:i]] = f[i+1:]
+		}
+	}
+	return out
+}
+
+func parseTotal(line string) int64 {
+	line = strings.TrimPrefix(line, "[DONE]")
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "total=")
+	var n int64
+	fmt.Sscanf(line, "%d", &n)
+	return n
+}
+
+// findVenvPython 定位 ai-twin venv Python（wechatauto-replica 解密引擎依赖）
+func findVenvPython() string {
+	if p := os.Getenv("WECHAT_TWIN_PYTHON"); p != "" && fileExists(p) {
+		return p
+	}
+	cands := []string{
+		filepath.Join(wd, "..", "ai-twin", "venv", "Scripts", "python.exe"),
+		filepath.Join(wd, "..", "ai-twin", "venv", "python.exe"),
+	}
+	for _, c := range cands {
+		abs, _ := filepath.Abs(c)
+		if fileExists(abs) {
+			return abs
+		}
+	}
+	return ""
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }

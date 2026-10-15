@@ -78,11 +78,23 @@ func pbkdf2Key(password, salt []byte, iter, keyLen int, h func() hash.Hash) []by
 	return out[:keyLen]
 }
 
-// tryDecryptFirstPage 尝试用 keyHex 解密 db 第一页，返回明文前 16 字节与参数组合名
-// 覆盖 SQLCipher 4（SHA512/256000/48）与 3（SHA1/64000/32、SHA1/64000/36）常用参数
+// tryDecryptFirstPage 尝试用 keyHex 解密 db 第一页，返回明文前 120 字节与参数组合名
+// 仅读文件头（8KB），避免逐候选全量读库导致 I/O 爆炸
+// 覆盖 SQLCipher 4（SHA512/256000/48）与 3（SHA1/64000/32、SHA1/1000/32）常用参数
 func tryDecryptFirstPage(dbPath, keyHex string) ([]byte, string, bool) {
-	raw, err := os.ReadFile(dbPath)
-	if err != nil || len(raw) < 64 {
+	f, err := os.Open(dbPath)
+	if err != nil {
+		return nil, "", false
+	}
+	defer f.Close()
+	head := make([]byte, 16+4096+48) // salt + 页1 + reserve
+	n, err := f.Read(head)
+	if err != nil && n < 16+48 {
+		return nil, "", false
+	}
+	raw := head[:n]
+	// 需覆盖 salt(16)+页1数据(4032)+IV(16)，共 4064
+	if n < 16+4096-16-48+16 {
 		return nil, "", false
 	}
 	keyBytes, err := hex.DecodeString(keyHex)
@@ -92,19 +104,27 @@ func tryDecryptFirstPage(dbPath, keyHex string) ([]byte, string, bool) {
 	// salt = 文件前 16 字节
 	salt := raw[:16]
 	combos := []struct {
-		name string
-		iter int
-		res  int
-		hfn  func() hash.Hash
+		name  string
+		iter  int
+		res   int
+		dkLen int
+		hfn   func() hash.Hash
 	}{
-		{"v4-sha512-256k", 256000, 48, sha512.New},
-		{"v4-sha512-64k", 64000, 48, sha512.New},
-		{"v3-sha1-64k-r32", 64000, 32, sha1.New},
-		{"v3-sha1-1k-r32", 1000, 32, sha1.New},
+		{"v4-sha512-256k-r32", 256000, 48, 32, sha512.New},
+		{"v4-sha512-256k-r48", 256000, 48, 48, sha512.New},
+		{"v4-sha512-64k-r32", 64000, 48, 32, sha512.New},
+		{"v4-sha512-64k-r48", 64000, 48, 48, sha512.New},
+		{"v3-sha1-64k-r32", 64000, 32, 32, sha1.New},
+		{"v3-sha1-1k-r32", 1000, 32, 32, sha1.New},
 	}
 	for _, c := range combos {
-		dk := pbkdf2Key(keyBytes, salt, c.iter, 32, c.hfn)
-		if pl := decryptPage(raw, 0, dk, c.res); pl != nil && looksLikeSQLitePage0(pl) {
+		dk := pbkdf2Key(keyBytes, salt, c.iter, c.dkLen, c.hfn)
+		// SQLCipher AES-256-CBC 使用派生密钥前 32 字节
+		aesKey := dk
+		if len(aesKey) > 32 {
+			aesKey = aesKey[:32]
+		}
+		if pl := decryptPage(raw, 0, aesKey, c.res); pl != nil && looksLikeSQLitePage0(pl) {
 			return pl[:120], c.name, true
 		}
 	}
