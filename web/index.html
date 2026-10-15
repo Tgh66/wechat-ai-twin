@@ -136,6 +136,7 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
       <div class="tab" data-p="duo" onclick="switchTab('duo')">双人报告</div>
       <div class="tab" data-p="twin" onclick="switchTab('twin')">数字分身</div>
       <div class="tab" data-p="train" onclick="switchTab('train')">训练</div>
+      <div class="tab" data-p="data" onclick="switchTab('data')">数据</div>
     </div>
     <div class="content">
       <!-- 总览 -->
@@ -168,6 +169,17 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
           <div class="chartbox"><h3>双方消息量对比</h3><div class="chart" id="sVol"></div></div>
           <div class="chartbox tall"><h3>情感强度分布</h3><div class="chart" id="sStrength"></div></div>
           <div class="chartbox tall"><h3>各时段情感均值</h3><div class="chart" id="sHour"></div></div>
+          <div class="chartbox full"><h3>情绪消息明细（积极 / 消极）</h3>
+            <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
+              <select id="emoKind" style="background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font-size:12px">
+                <option value="neg">😔 消极消息</option>
+                <option value="pos">😄 积极消息</option>
+              </select>
+              <button class="btn" onclick="loadEmoMsgs()">查看</button>
+              <span style="font-size:11px;color:var(--tx2)" id="emoMsgInfo"></span>
+            </div>
+            <div class="hits" id="emoMsgList" style="max-height:380px"><div style="color:var(--tx2);font-size:12px;padding:16px;text-align:center">选择情绪类型后点「查看」，展示该会话最近消息（含内容与时间）</div></div>
+          </div>
         </div>
       </div>
       <!-- 记录分析 -->
@@ -197,6 +209,17 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
           <span class="badge off" id="twinState">未连接</span>
           <span style="margin-left:10px" id="twinNote"></span>
         </div>
+        <div style="background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">推理服务（数字分身引擎）</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select id="twinModel" style="flex:1;min-width:220px;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font-size:12px"><option value="">— 加载中 —</option></select>
+            <input id="twinPort" type="number" value="5000" min="1024" max="65535" style="width:90px;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;font-size:12px" title="推理服务端口">
+            <button class="btn" onclick="startServe()">▶ 启动服务</button>
+            <button class="btn" style="background:var(--card2);border:1px solid var(--err);color:var(--err)" onclick="stopServe()">⏹ 停止</button>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:var(--tx2)" id="twinServeNote"></div>
+          <div style="margin-top:6px;font-size:11px;color:var(--tx2);font-family:monospace;white-space:pre-wrap;max-height:90px;overflow-y:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px" id="serveLog">（服务日志将在此显示）</div>
+        </div>
         <div class="chatwin">
           <div class="msgbox" id="msgBox">
             <div class="msg ai"><div class="tag">AI 分身</div>嗨，我是你的 AI 数字分身～ 想聊点什么？</div>
@@ -221,7 +244,7 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
                 <input type="radio" name="persona" value="me" checked onchange="trainExplain()"> 🧑 训练“我”的分身（模仿我的说话方式）
               </label>
               <label style="flex:1;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
-                <input type="radio" name="persona" value="other" onchange="trainExplain()"> 👤 训练对方的分身（如：爱妻顺遂的说话风格）
+                <input type="radio" name="persona" value="other" onchange="trainExplain()"> 👤 训练对方的分身（模仿对方的说话风格）
               </label>
             </div>
             <div id="trainExplain" style="margin-top:10px;font-size:12px;color:var(--tx2)"></div>
@@ -238,14 +261,18 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
               <input id="trModelPath" placeholder="或手动导入本地模型路径（含 config.json 的目录）" style="flex:1;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:9px;font-size:12px">
             </div>
             <div id="modelHint" style="margin-top:8px;font-size:11px;color:var(--tx2)"></div>
+            <div id="modelManage" style="margin-top:8px;font-size:12px;color:var(--tx2)"></div>
           </div>
           <div class="chartbox">
             <h3>③ 训练参数</h3>
+            <div style="margin-bottom:8px;font-size:11px;color:var(--tx2);line-height:1.7">
+              📌 推荐值：epochs=1~2（越多越像但更慢、易过拟合）· 样本数=5000~20000（每条对话对上限）· 学习率=0.0001~0.0003（偏大易发散）· 端口默认 5000
+            </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">
-              <label style="color:var(--tx2)">epochs<input id="trEpochs" type="number" value="2" min="1" max="5" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
-              <label style="color:var(--tx2)">样本数（上限）<input id="trSamples" type="number" value="15000" min="500" max="60000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
-              <label style="color:var(--tx2)">学习率<input id="trLr" type="text" value="0.0002" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
-              <label style="color:var(--tx2)">推理端口<input id="trPort" type="number" value="5000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)" title="训练轮数：1~2 推荐，越多越像但更慢/易过拟合">epochs<input id="trEpochs" type="number" value="2" min="1" max="5" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)" title="样本上限：5000~20000 推荐，越多覆盖对话越全但越慢">样本数（上限）<input id="trSamples" type="number" value="15000" min="500" max="60000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)" title="学习率：0.0001~0.0003 推荐，偏大易发散">学习率<input id="trLr" type="text" value="0.0002" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
+              <label style="color:var(--tx2)" title="推理服务端口，默认 5000">推理端口<input id="trPort" type="number" value="5000" style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px;margin-top:4px"></label>
             </div>
           </div>
           <div class="chartbox">
@@ -268,6 +295,21 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
             </div>
             <div style="margin-top:8px;font-size:12px;color:var(--tx2)" id="trInfo"></div>
             <div style="margin-top:10px;font-size:11px;color:var(--tx2);font-family:monospace;white-space:pre-wrap;max-height:150px;overflow-y:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px" id="trLog">（训练日志将在此显示）</div>
+          </div>
+        </div>
+      </div>
+      <!-- 数据（数据源/清洗） -->
+      <div class="page" id="p-data">
+        <div class="cards" id="dataCards"></div>
+        <div class="chartbox full">
+          <h3>聊天记录数据源（JSONL 导出）</h3>
+          <div style="font-size:12px;color:var(--tx2);line-height:1.8;margin-bottom:10px;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px">
+            ⚠️ 微信 4.0 的聊天数据库为加密格式，本工具读取的是<b>已导出的 JSONL</b>。若记录不全，请在微信 PC 端备份/导出完整记录后放入 <code>data/</code> 目录再重建索引。
+          </div>
+          <div id="dataSrcList"></div>
+          <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn" onclick="reindexAll()">🔄 合并去重并重建索引</button>
+            <button class="btn" style="background:var(--card2);border:1px solid var(--line);color:var(--tx)" onclick="discover()">🔎 自动搜索数据目录</button>
           </div>
         </div>
       </div>
@@ -352,11 +394,14 @@ function switchTab(p){
 }
 
 // ---------------- 数据加载 ----------------
+let loadSeq = 0; // 请求序号：快速切换会话时只渲染最新一次
 async function loadAll(){
   if(!curChat) return;
+  const seq = ++loadSeq;
   loading(true, '分析会话数据…');
   setBar(0.15);
   const [st, se] = await Promise.all([api('stats', {chat: curChat}), api('sentiment', {chat: curChat})]);
+  if(seq !== loadSeq) return; // 期间已切换会话，丢弃过期结果
   setBar(0.6);
   hist = {stats: st, sent: se};
   renderOverview(st);
@@ -536,17 +581,27 @@ function fmtDays(a,b){
 // ---------------- 记录分析 ----------------
 async function doSearch(){
   const kw = $('kwInput').value.trim();
-  if(!kw || !curChat) return;
+  if(!curChat){ alert('请先选择左侧会话再搜索'); return; }
+  if(!kw){ $('hitList').innerHTML = '<div style="color:var(--tx2);padding:20px;text-align:center">请输入关键词</div>'; return; }
   loading(true, '搜索“'+kw+'”…');
-  const d = await api('search', {chat: curChat, q: kw});
-  loading(false);
-  const list = $('hitList');
-  if(!d.hits || !d.hits.length){ list.innerHTML = '<div style="color:var(--tx2);padding:20px;text-align:center">没有找到相关记录</div>'; return; }
-  list.innerHTML = d.hits.map(h => {
-    const t = new Date(h.TS*1000);
-    const txt = h.Content.replace(/</g,'&lt;').replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','g'), '<mark>$1</mark>');
-    return `<div class="hit"><div class="tm">${t.toLocaleString('zh-CN')}</div><span class="who ${h.Self?'':'o'}">${h.Self?'我':'对方'}</span>${txt}</div>`;
-  }).join('');
+  try{
+    const d = await api('search', {chat: curChat, q: kw});
+    loading(false);
+    const list = $('hitList');
+    if(d.error){ list.innerHTML = '<div style="color:var(--err);padding:20px;text-align:center">搜索失败：'+esc(d.error)+'</div>'; return; }
+    if(!d.hits || !d.hits.length){
+      list.innerHTML = `<div style="color:var(--tx2);padding:20px;text-align:center">在「${esc(curChat)}」中未找到「${esc(kw)}」<br><span style="font-size:11px">（仅检索文本消息；可尝试换个关键词，或到「数据」页重建索引后重试）</span></div>`;
+      return;
+    }
+    list.innerHTML = `<div style="color:var(--tx2);font-size:11px;padding-bottom:8px">找到 ${d.count} 条相关记录（最近 ${d.hits.length} 条）</div>` + d.hits.map(h => {
+      const t = new Date(h.TS*1000);
+      const txt = String(h.Content).replace(/</g,'&lt;').replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','g'), '<mark>$1</mark>');
+      return `<div class="hit"><div class="tm">${t.toLocaleString('zh-CN')}</div><span class="who ${h.Self?'':'o'}">${h.Self?'我':'对方'}</span>${txt}</div>`;
+    }).join('');
+  }catch(e){
+    loading(false);
+    $('hitList').innerHTML = '<div style="color:var(--err);padding:20px;text-align:center">搜索请求失败：'+esc(String(e))+'</div>';
+  }
 }
 async function exportJson(){
   if(!curChat) return;
@@ -603,9 +658,12 @@ function renderDiscover(dirs, jsonlFiles){
       <div class="dc-acts">${acts.join('')}</div></div>`;
   }
   for(const j of jsonlFiles){
-    html += `<div class="dc-item"><div class="r1"><span class="dc-badge jsonl">JSONL 数据</span><span class="dc-path">${esc(j)}</span></div>
-      <div class="dc-meta">已导出的聊天记录文件（可直接建索引）</div>
-      <div class="dc-acts"><button class="btn" onclick="importPath('${q(j)}')">导入</button></div></div>`;
+    const size = j.size ? fmtBytes(j.size) : '';
+    const est = j.est_lines ? `约 ${fmt(j.est_lines)} 条` : '';
+    const mtime = j.mtime ? `更新 ${esc(j.mtime)}` : '';
+    html += `<div class="dc-item"><div class="r1"><span class="dc-badge jsonl">JSONL 数据</span><span class="dc-path">${esc(j.path)}</span></div>
+      <div class="dc-meta">${size} · ${est} · ${mtime}</div>
+      <div class="dc-acts"><button class="btn" onclick="importPath('${q(j.path)}')">导入</button></div></div>`;
   }
   bd.innerHTML = html;
   openDiscover();
@@ -631,7 +689,7 @@ function trainExplain(){
   const p = document.querySelector('input[name=persona]:checked').value;
   $('trainExplain').textContent = p === 'me'
     ? '将训练一个模仿"你"的说话方式的分身：对方的消息作为输入，你的回复作为学习目标。'
-    : '将训练一个模仿对方（如爱妻顺遂）的分身：你的消息作为输入，对方的回复作为学习目标。';
+    : '将训练一个模仿对方的分身：你的消息作为输入，对方的回复作为学习目标（会话名仅用于选取数据，不会写入任何公开产物）。';
 }
 async function loadTrainPanel(){
   const [m, g, s, ts] = await Promise.all([
@@ -652,6 +710,7 @@ async function loadTrainPanel(){
   for(const lm of (m.local||[])) addOpt(lm.path, `📁 ${lm.name}（本地 ${lm.size_gb}GB）`);
   for(const cm of (m.catalog||[])) addOpt(cm.id, `☁️ ${cm.name}（${cm.tier}，${cm.size_gb}GB，镜像下载）`);
   $('modelHint').textContent = '镜像模型来自 ModelScope（国内直连）。选中后点「下载选中」，完成后自动加入本地列表。';
+  renderModelManage(m.local || []);
   // GPU 卡
   $('trainGpu').innerHTML = g.available ? [
     ['显卡', g.name, ''],
@@ -688,11 +747,13 @@ function renderTrainStatus(ts){
   $('trBar').style.width = pct+'%';
   $('trPct').textContent = pct+'%';
   $('trJobDesc').textContent = ts.running
-    ? `${ts.chat} / ${ts.persona==='other'?'对方':'我'} / step ${ts.step}/${ts.total} / loss ${ts.loss}`
+    ? (ts.persona==='download'
+      ? `下载 ${ts.chat} · ${fmt(ts.dl_size||0)}MB${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}`
+      : `${ts.chat} / ${ts.persona==='other'?'对方':'我'} / step ${ts.step}/${ts.total} / loss ${ts.loss}`)
     : (ts.stage ? ts.stage : '无');
   $('trInfo').textContent = ts.running
     ? `开始于 ${ts.started} · 输出: ${ts.out||''}`
-    : '';
+    : (ts.dl_size ? `最近一次下载: ${fmt(ts.dl_size)}MB${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}` : '');
 }
 async function startTrain(){
   const chat = $('trChat').value;
@@ -719,12 +780,12 @@ async function stopTrain(){
 }
 async function dlModel(){
   const id = $('trModel').value;
-  if(!id || !id.startsWith('Qwen/')){ alert('请选择一个镜像模型'); return; }
+  if(!id || id.indexOf('/') < 0){ alert('请先在下拉框选择一个镜像模型（含 / 的项）'); return; }
   loading(true, '后台下载模型 '+id+' …');
   const r = await api('model_download', {id});
   loading(false);
   if(r.error){ alert(r.error); return; }
-  $('trLog').textContent = '开始下载 ' + id + '，完成后自动刷新模型列表。\n下载进度见下方日志（大型模型需 10-40 分钟）。';
+  $('trLog').textContent = '开始下载 ' + id + '，完成后自动刷新模型列表。\n下载进度与速度实时显示在任务状态区（大型模型需 10-40 分钟）。';
 }
 // 切到训练页时加载
 let trainLoaded = false;
@@ -737,7 +798,133 @@ const _origSwitch = switchTab;
 switchTab = function(p){
   _origSwitch(p);
   if(p === 'train') onTrainTab();
+  if(p === 'twin') loadTwinPanel();
+  if(p === 'data') loadDataPanel();
 };
+
+// ---------------- 数据页（数据源 / 清洗） ----------------
+async function loadDataPanel(){
+  const s = await api('sources');
+  const totalBytes = (s.sources||[]).reduce((a,b)=>a+(b.size||0),0);
+  $('dataCards').innerHTML = [
+    ['索引消息数', fmt(s.count||0), 'green'],
+    ['数据源数量', (s.sources||[]).length, ''],
+    ['数据总量', fmtBytes(totalBytes), ''],
+    ['当前来源', (s.source||'—').split('|').length>1 ? (s.source||'').split('|').length+' 个文件' : '—', ''],
+  ].map(([k,v,cls]) => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('');
+  const list = $('dataSrcList');
+  if(!s.sources || !s.sources.length){
+    list.innerHTML = '<div style="color:var(--tx2);padding:12px;font-size:12px">未找到 JSONL 数据源。可通过「自动搜索」定位微信目录，或在微信 PC 端导出记录后放入 data/ 目录。</div>';
+    return;
+  }
+  list.innerHTML = s.sources.map(x => `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 12px;background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:8px;font-size:12px;flex-wrap:wrap">
+      <div style="flex:1;word-break:break-all">${esc(x.path)}</div>
+      <div style="color:var(--tx2);white-space:nowrap">${fmtBytes(x.size)} · 约 ${fmt(x.est_lines)} 条 · ${esc(x.mtime||'')}</div>
+    </div>`).join('');
+}
+async function reindexAll(){
+  if(!confirm('将全部数据源合并去重并重建索引（152 万条约需数分钟，期间查询暂不可用）。继续？')) return;
+  loading(true, '正在合并去重重建索引…');
+  const r = await api('reindex');
+  loading(false);
+  if(r.error){ alert(r.error); return; }
+  const t0 = Date.now();
+  const timer = setInterval(async ()=>{
+    const s = await api('status');
+    $('loadingText').textContent = `重建中… 当前 ${fmt(s.count)} 条 (${((Date.now()-t0)/1000).toFixed(0)}s)`;
+    if(!s.indexing && s.count>0){ clearInterval(timer); loading(false); await loadChats(); loadDataPanel(); }
+  }, 1500);
+}
+
+// ---------------- 数字分身：推理服务手动控制 ----------------
+async function loadTwinPanel(){
+  const [ms, ss] = await Promise.all([api('models'), api('serve_status')]);
+  const sel = $('twinModel');
+  sel.innerHTML = '';
+  if(!ms.local || !ms.local.length){
+    const o = document.createElement('option'); o.value=''; o.textContent='（无本地模型，请到训练页下载）'; sel.appendChild(o);
+  } else {
+    for(const lm of ms.local){
+      const o = document.createElement('option'); o.value = lm.path; o.textContent = `📁 ${lm.name}（${lm.size_gb}GB）`; sel.appendChild(o);
+    }
+  }
+  $('twinServeNote').textContent = ss.online ? '服务在线：可直接对话' : '服务离线：选择模型后点「启动服务」';
+  pollServeLog();
+}
+async function startServe(){
+  const model = $('twinModel').value;
+  if(!model){ alert('请先在模型下拉选择一个本地模型（训练页可下载）'); return; }
+  const port = $('twinPort').value || 5000;
+  loading(true, '启动推理服务…（首次加载模型约需 1-2 分钟）');
+  const r = await api('serve_start', {model, port});
+  loading(false);
+  if(r.error){ alert('启动失败：'+r.error); return; }
+  $('twinServeNote').textContent = `启动中… 模型 ${r.model}（端口 ${r.port}）`;
+  setTimeout(pollServeLog, 3000);
+}
+async function stopServe(){
+  if(!confirm('停止推理服务？')) return;
+  await api('serve_stop');
+  $('twinServeNote').textContent = '服务已停止';
+  $('twinState').textContent = '未连接'; $('twinState').className = 'badge off';
+}
+async function pollServeLog(){
+  const d = await api('serve_log').catch(()=>({log:''}));
+  if(d.log) $('serveLog').textContent = d.log.slice(-2000);
+}
+
+// ---------------- 训练页：本地模型管理 ----------------
+function renderModelManage(ms){
+  const box = $('modelManage');
+  if(!ms || !ms.length){ box.innerHTML = '<span style="color:var(--tx2)">暂无本地模型</span>'; return; }
+  box.innerHTML = '<div style="margin-bottom:6px;color:var(--tx2)">本地模型管理（删除不可恢复）：</div>' + ms.map((m,i)=>`
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <span style="flex:1;font-size:12px;word-break:break-all;min-width:140px">📁 ${esc(m.name)}（${m.size_gb}GB）</span>
+      <input id="rmName${i}" placeholder="新名字" style="width:130px;background:var(--card2);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:5px;font-size:11px">
+      <button class="btn" style="padding:4px 10px;font-size:11px" onclick="renameModel('${q(esc(m.path))}', ${i})">重命名</button>
+      <button class="btn" style="padding:4px 10px;font-size:11px;background:var(--card2);border:1px solid var(--err);color:var(--err)" onclick="deleteModel('${q(esc(m.path))}')">删除</button>
+    </div>`).join('');
+}
+async function renameModel(path, i){
+  const name = $('rmName'+i).value.trim();
+  if(!name){ alert('请输入新名字'); return; }
+  const r = await api('model_rename', {path, name});
+  if(r.error){ alert(r.error); return; }
+  alert('已重命名，刷新模型列表');
+  loadTrainPanel();
+}
+async function deleteModel(path){
+  if(!confirm('确定删除该模型目录？此操作不可恢复！\n\n' + path)) return;
+  const r = await api('model_delete', {path});
+  if(r.error){ alert(r.error); return; }
+  alert('已删除');
+  loadTrainPanel();
+}
+
+// ---------------- 情感消息明细 ----------------
+async function loadEmoMsgs(){
+  if(!curChat){ alert('请先选择左侧会话'); return; }
+  const kind = $('emoKind').value;
+  $('emoMsgInfo').textContent = '加载中…';
+  const d = await api('sentiment_msgs', {chat: curChat, kind, limit: 200});
+  const list = $('emoMsgList');
+  $('emoMsgInfo').textContent = `共 ${d.count} 条（按时间倒序）`;
+  if(!d.msgs || !d.msgs.length){ list.innerHTML = '<div style="color:var(--tx2);padding:20px;text-align:center">该会话暂无此类消息（文本消息中）</div>'; return; }
+  list.innerHTML = d.msgs.map(m => {
+    const t = new Date(m.ts*1000);
+    return `<div class="hit"><div class="tm">${t.toLocaleString('zh-CN')}</div><span class="who ${m.self?'':'o'}">${m.self?'我':'对方'}</span>${esc(m.content)}</div>`;
+  }).join('');
+}
+
+// ---------------- 工具：字节格式化 ----------------
+function fmtBytes(n){
+  if(!n) return '0 B';
+  const u = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  while(n >= 1024 && i < u.length-1){ n /= 1024; i++; }
+  return n.toFixed(i?1:0)+' '+u[i];
+}
 
 // ---------------- 数字分身 ----------------
 let twinBusy = false;

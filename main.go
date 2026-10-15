@@ -224,22 +224,28 @@ var loadOnce sync.Once
 
 func autoLoadData() {
 	loadOnce.Do(func() {
-		// 1) data/*.jsonl
-		jsonl := findJSONL()
-		if jsonl != "" {
-			log.Println("发现聊天记录:", jsonl)
-			GDB.EnsureIndex(jsonl, func(done int64, total int64) {
+		// 1) 多源合并：data/ 与 ai-twin/data/ 下全部 JSONL 合并去重导入
+		srcs := SourceInfos()
+		if len(srcs) > 0 {
+			files := []string{}
+			var gb float64
+			for _, s := range srcs {
+				files = append(files, s.Path)
+				gb += float64(s.Size) / 1e9
+			}
+			log.Printf("发现 %d 个聊天记录数据源（合计约 %.2f GB），合并去重导入…", len(srcs), gb)
+			GDB.EnsureIndexMulti(files, func(done int64, total int64) {
 				if total > 0 && done%500000 == 0 {
 					log.Printf("导入进度: %d / %d", done, total)
 				}
 			})
 			return
 		}
-		// 2) 自动搜索微信目录（注册表/默认/各盘 xwechat_files）
-		log.Println("data/ 下未发现导出，自动搜索微信目录…")
+		// 2) 无 JSONL 时自动搜索微信目录（注册表/默认/各盘 xwechat_files）
+		log.Println("未发现 JSONL 导出，自动搜索微信目录…")
 		res := DiscoverWeChatDirs()
 		if dirs, ok := res["dirs"].([]WeChatDir); ok && len(dirs) > 0 {
-			log.Printf("发现 %d 个微信数据目录，首选: %s（%s，%d 个账号）",
+			log.Printf("发现 %d 个微信数据目录，首选: %s（%s，%d 个账号）。注意：微信 4.0 数据库为加密格式，需导入导出的 JSONL 才能建索引。",
 				len(dirs), dirs[0].Path, dirs[0].Format, dirs[0].Accounts)
 		}
 	})
@@ -262,9 +268,7 @@ func findJSONL() string {
 		}
 	}
 	return best
-}
-
-// ---------------- API ----------------
+} // ---------------- API ----------------
 
 func apiHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -283,13 +287,29 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "meta":
 		writeJSON(map[string]interface{}{
-			"version":   "1.1.0",
+			"version":   "1.1.2",
 			"engine":    "go",
 			"db_exists": GDB.Exists(),
 			"db_count":  GDB.Count(),
 			"data_dir":  dataDir,
 			"model_dir": modelDir,
 		})
+	case path == "sources":
+		writeJSON(map[string]interface{}{"sources": SourceInfos(), "count": GDB.Count(), "source": GDB.Source()})
+	case path == "reindex":
+		srcs := SourceInfos()
+		files := []string{}
+		for _, s := range srcs {
+			files = append(files, s.Path)
+		}
+		if len(files) == 0 {
+			writeErr("没有可导入的 JSONL 数据", 400)
+			return
+		}
+		// 清空复用签名强制重建（合并去重）
+		GDB.metaSet("source_sig", "")
+		go GDB.EnsureIndexMulti(files, nil)
+		writeJSON(map[string]interface{}{"ok": true, "msg": "正在合并去重重建索引…", "files": len(files)})
 	case path == "discover":
 		writeJSON(DiscoverWeChatDirs())
 	case path == "import":
@@ -332,6 +352,11 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	case path == "sentiment_emotions":
 		chat := q.Get("chat")
 		writeJSON(GDB.EmotionDistribution(chat))
+	case path == "sentiment_msgs":
+		chat := q.Get("chat")
+		kind := q.Get("kind")
+		limit := atoiOr(q.Get("limit"), 100)
+		writeJSON(GDB.SentimentMsgs(chat, kind, limit))
 	case path == "search":
 		chat := q.Get("chat")
 		kw := q.Get("q")
@@ -395,6 +420,43 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(map[string]interface{}{"ok": true})
 	case path == "serve_status":
 		writeJSON(map[string]interface{}{"online": ServeStatus(5000), "port": 5000})
+	case path == "serve_start":
+		model := q.Get("model")
+		port := q.Get("port")
+		res, err := ServeStart(model, port)
+		if err != nil {
+			writeJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(res)
+	case path == "serve_stop":
+		ServeStop()
+		writeJSON(map[string]interface{}{"ok": true})
+	case path == "serve_log":
+		writeJSON(map[string]interface{}{"log": tailFile(filepath.Join(dataDir, "serve_job.log"), 3000)})
+	case path == "model_delete":
+		p := q.Get("path")
+		if p == "" {
+			writeErr("缺少 path 参数", 400)
+			return
+		}
+		if err := ModelDelete(p); err != nil {
+			writeJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(map[string]interface{}{"ok": true})
+	case path == "model_rename":
+		p := q.Get("path")
+		n := q.Get("name")
+		if p == "" || n == "" {
+			writeErr("缺少 path/name 参数", 400)
+			return
+		}
+		if err := ModelRename(p, n); err != nil {
+			writeJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(map[string]interface{}{"ok": true})
 	case path == "model_download":
 		mid := q.Get("id")
 		if mid == "" {

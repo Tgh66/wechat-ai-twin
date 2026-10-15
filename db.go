@@ -2,11 +2,15 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha1"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,8 +62,130 @@ func (d *DB) Indexing() bool {
 
 var indexing bool
 
-// EnsureIndex 从 JSONL 建立/更新索引（已存在且未过期则跳过）
+// ---------------- 多源合并去重导入 ----------------
+
+// JSONLSource 一个聊天记录数据源
+type JSONLSource struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	Est     int64  `json:"est_lines"` // 估算消息数（采样）
+	ModTime string `json:"mtime"`
+}
+
+// SourceInfos 返回全部已知 JSONL 数据源（含大小/估算条数）
+func SourceInfos() []JSONLSource {
+	outs := []JSONLSource{}
+	seen := map[string]bool{}
+	roots := []string{filepath.Join(dataDir, "*.jsonl")}
+	if sibling := filepath.Join(wd, "..", "ai-twin", "data", "*.jsonl"); sibling != filepath.Join(dataDir, "*.jsonl") {
+		roots = append(roots, sibling)
+	}
+	for _, pat := range roots {
+		files, _ := filepath.Glob(pat)
+		for _, f := range files {
+			if seen[f] {
+				continue
+			}
+			seen[f] = true
+			st, err := os.Stat(f)
+			if err != nil {
+				continue
+			}
+			outs = append(outs, JSONLSource{
+				Path:    f,
+				Size:    st.Size(),
+				Est:     estJSONLLines(f),
+				ModTime: st.ModTime().Format("2006-01-02 15:04"),
+			})
+		}
+	}
+	sort.Slice(outs, func(i, j int) bool { return outs[i].Size > outs[j].Size })
+	return outs
+}
+
+// estJSONLLines 采样估算 JSONL 行数（读前 20 万行算平均行字节）
+func estJSONLLines(path string) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	var n, bytes int64
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for sc.Scan() {
+		bytes += int64(len(sc.Bytes()))
+		n++
+		if n >= 200000 {
+			break
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	if st, err := os.Stat(path); err == nil {
+		return int64(float64(st.Size()) * float64(n) / float64(bytes))
+	}
+	return n
+}
+
+// EnsureIndex 单文件导入（兼容旧调用），内部走多源合并
 func (d *DB) EnsureIndex(jsonl string, progress func(done, total int64)) {
+	d.EnsureIndexMulti([]string{jsonl}, progress)
+}
+
+// flexBool 兼容 JSON 中 is_self 的 true/false 与 1/0 两种写法
+type flexBool bool
+
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case "true":
+		*b = true
+		return nil
+	case "false":
+		*b = false
+		return nil
+	}
+	var x int
+	if err := json.Unmarshal(data, &x); err != nil {
+		return err
+	}
+	*b = x != 0
+	return nil
+}
+
+// JSONLRow 聊天记录导出行（兼容字段缺失）
+type JSONLRow struct {
+	Name    string   `json:"name"`
+	User    string   `json:"user"`
+	IsSelf  flexBool `json:"is_self"`
+	TS      int64    `json:"ts"`
+	Type    string   `json:"type"`
+	Content string   `json:"content"`
+}
+
+// parseRow 解析一行；失败时打印采样（前 5 个）便于排查数据格式问题
+func parseRow(line []byte, errs *int) (JSONLRow, bool) {
+	var r JSONLRow
+	if json.Unmarshal(line, &r) != nil {
+		if errs != nil && *errs < 5 {
+			*errs++
+			fmt.Printf("JSONL 行解析失败(前%d字节): %s\n", 80, string(line[:min(80, len(line))]))
+		}
+		return r, false
+	}
+	return r, true
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// EnsureIndexMulti 从多个 JSONL 合并建立索引，按内容+时间+会话去重
+func (d *DB) EnsureIndexMulti(files []string, progress func(done, total int64)) {
 	d.indexMu.Lock()
 	if indexing {
 		d.indexMu.Unlock()
@@ -74,106 +200,189 @@ func (d *DB) EnsureIndex(jsonl string, progress func(done, total int64)) {
 		d.indexMu.Unlock()
 	}()
 
-	st, err := os.Stat(jsonl)
-	if err != nil {
-		fmt.Println("数据文件不存在:", jsonl)
-		return
-	}
-
-	// 复用检查：DB 有数据且不比 jsonl 旧
-	d.mu.RLock()
-	has := d.count > 0
-	cur := d.source
-	d.mu.RUnlock()
-	if has && cur == jsonl {
-		fmt.Printf("索引已就绪（%d 条），跳过导入\n", d.count)
-		return
-	}
-	if has {
-		if dbst, err := os.Stat(dbPath); err == nil && dbst.ModTime().After(st.ModTime()) {
-			d.mu.Lock()
-			d.source = jsonl
-			d.mu.Unlock()
-			fmt.Printf("复用已有索引（%d 条）\n", d.count)
-			return
+	// 过滤存在的文件，按大小排序（大文件在前）
+	exist := []string{}
+	for _, f := range files {
+		if st, err := os.Stat(f); err == nil && st.Size() > 0 {
+			exist = append(exist, f)
 		}
 	}
+	if len(exist) == 0 {
+		fmt.Println("没有可导入的 JSONL 数据")
+		return
+	}
 
-	fmt.Println("构建聊天索引:", jsonl)
+	// 复用检查：DB 有数据 且 已导入的文件集合(含 mtime)与当前一致
+	sig := sourceSig(exist)
+	d.mu.RLock()
+	has := d.count > 0
+	prev := d.metaGet("source_sig")
+	d.mu.RUnlock()
+	if has && prev == sig {
+		d.mu.Lock()
+		d.source = strings.Join(exist, "|")
+		d.mu.Unlock()
+		fmt.Printf("复用已有索引（%d 条），数据源未变化\n", d.count)
+		return
+	}
+
+	fmt.Println("构建聊天索引（多源合并去重）:", exist)
 	t0 := time.Now()
-	// 重建
+
+	// 重建表（sig 唯一键实现去重）
 	d.conn.Exec("DROP TABLE IF EXISTS msgs")
-	d.conn.Exec("CREATE TABLE msgs(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_self INTEGER, ts INTEGER, type TEXT, content TEXT)")
+	d.conn.Exec("CREATE TABLE msgs(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_self INTEGER, ts INTEGER, type TEXT, content TEXT, sig TEXT UNIQUE)")
 	d.conn.Exec("CREATE INDEX IF NOT EXISTS idx_name ON msgs(name)")
 	d.conn.Exec("CREATE INDEX IF NOT EXISTS idx_ts ON msgs(ts)")
 
-	f, err := os.Open(jsonl)
-	if err != nil {
-		fmt.Println("打开失败:", err)
-		return
+	var total, done int64
+	for _, f := range exist {
+		if st, err := os.Stat(f); err == nil {
+			total += estJSONLLines(f)
+			_ = st
+		}
 	}
-	defer f.Close()
+	if total == 0 {
+		total = 1
+	}
 
-	total := st.Size()
-	var done int64
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
-	tx, _ := d.conn.Begin()
-	stmt, _ := tx.Prepare("INSERT INTO msgs(name,is_self,ts,type,content) VALUES(?,?,?,?,?)")
-	batch := 0
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) < 2 {
-			continue
+	ins := func(path string, p func(done, total int64)) int64 {
+		f, err := os.Open(path)
+		if err != nil {
+			return 0
 		}
-		var r struct {
-			Name    string `json:"name"`
-			User    string `json:"user"`
-			IsSelf  bool   `json:"is_self"`
-			TS      int64  `json:"ts"`
-			Type    string `json:"type"`
-			Content string `json:"content"`
+		defer f.Close()
+		var n int64
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+		tx, err := d.conn.Begin()
+		if err != nil {
+			fmt.Printf("Begin 失败: %v\n", err)
+			return 0
 		}
-		if json.Unmarshal(line, &r) != nil {
-			continue
+		stmt, err := tx.Prepare("INSERT OR IGNORE INTO msgs(name,is_self,ts,type,content,sig) VALUES(?,?,?,?,?,?)")
+		if err != nil {
+			fmt.Printf("Prepare 失败: %v\n", err)
+			return 0
 		}
-		name := r.Name
-		if name == "" {
-			name = r.User
+		batch := 0
+		var execErrs, parseErrs int
+		for sc.Scan() {
+			line := sc.Bytes()
+			if len(line) < 2 {
+				continue
+			}
+			r, ok := parseRow(line, &parseErrs)
+			if !ok {
+				continue
+			}
+			name := r.Name
+			if name == "" {
+				name = r.User
+			}
+			if name == "" {
+				name = "?"
+			}
+			ts := r.TS
+			if ts == 0 {
+				ts = time.Now().Unix()
+			}
+			self := 0
+			if r.IsSelf {
+				self = 1
+			}
+			sig := msgSig(name, self, ts, r.Type, r.Content)
+			if res, err := stmt.Exec(name, self, ts, r.Type, r.Content, sig); err == nil {
+				if aff, _ := res.RowsAffected(); aff > 0 {
+					n++
+				}
+			} else if execErrs < 5 {
+				execErrs++
+				fmt.Printf("Exec 错误: %v\n", err)
+			}
+			batch++
+			if batch >= 20000 {
+				tx.Commit()
+				tx, err = d.conn.Begin()
+				if err != nil {
+					fmt.Printf("重新 Begin 失败: %v\n", err)
+					break
+				}
+				stmt, err = tx.Prepare("INSERT OR IGNORE INTO msgs(name,is_self,ts,type,content,sig) VALUES(?,?,?,?,?,?)")
+				if err != nil {
+					fmt.Printf("重新 Prepare 失败: %v\n", err)
+					break
+				}
+				batch = 0
+				if p != nil {
+					p(n, total)
+				}
+			}
 		}
-		if name == "" {
-			name = "?"
+		if err := sc.Err(); err != nil {
+			fmt.Printf("Scanner 错误: %v\n", err)
 		}
-		ts := r.TS
-		if ts == 0 {
-			ts = time.Now().Unix()
-		}
-		self := 0
-		if r.IsSelf {
-			self = 1
-		}
-		if _, err := stmt.Exec(name, self, ts, r.Type, r.Content); err != nil {
-			continue
-		}
-		done++
-		batch++
-		if batch >= 20000 {
-			tx.Commit()
-			tx, _ = d.conn.Begin()
-			stmt, _ = tx.Prepare("INSERT INTO msgs(name,is_self,ts,type,content) VALUES(?,?,?,?,?)")
-			batch = 0
+		tx.Commit()
+		return n
+	}
+
+	for _, f := range exist {
+		fmt.Println("导入:", f)
+		n := ins(f, func(done, total int64) {
 			if progress != nil {
 				progress(done, total)
 			}
-		}
+		})
+		done += n
+		fmt.Printf("  本文件 %d 条（累计去重后 %d 条）\n", n, done)
 	}
-	tx.Commit()
 
+	// 写 meta：source_sig（复用依据）
 	d.mu.Lock()
 	d.count = done
-	d.source = jsonl
+	d.source = strings.Join(exist, "|")
+	d.metaSet("source_sig", sig)
 	d.mu.Unlock()
-	fmt.Printf("索引完成: %d 条，耗时 %s\n", done, time.Since(t0).Round(time.Second))
+	fmt.Printf("索引完成: 去重后 %d 条，耗时 %s\n", done, time.Since(t0).Round(time.Second))
+}
+
+func msgSig(name string, self int, ts int64, typ, content string) string {
+	h := sha1.Sum([]byte(fmt.Sprintf("%s|%d|%d|%s|%s", name, self, ts, typ, content)))
+	return hex.EncodeToString(h[:])
+}
+
+func sourceSig(files []string) string {
+	var b strings.Builder
+	for _, f := range files {
+		st, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		b.WriteString(f)
+		b.WriteString(":")
+		b.WriteString(fmt.Sprintf("%d", st.Size()))
+		b.WriteString(":")
+		b.WriteString(fmt.Sprintf("%d", st.ModTime().Unix()))
+		b.WriteString(";")
+	}
+	h := sha1.Sum([]byte(b.String()))
+	return hex.EncodeToString(h[:])
+}
+
+// ---------------- meta 键值 ----------------
+
+func (d *DB) metaGet(k string) string {
+	var v string
+	err := d.conn.QueryRow("SELECT v FROM meta WHERE k=?", k).Scan(&v)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+func (d *DB) metaSet(k, v string) {
+	d.conn.Exec("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
+	d.conn.Exec("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", k, v)
 }
 
 // ---------------- 查询 ----------------

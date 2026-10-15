@@ -101,30 +101,72 @@ func dirSize(path string) float64 {
 	return sz
 }
 
-// 镜像模型目录（ModelScope 已验证可下载；Qwen 系列，按显存档位分组）
+// 镜像模型目录（ModelScope 可下载；Qwen/DeepSeek/GLM/MiniCPM 系列，按显存分组）
 var catalog = []map[string]interface{}{
+	// —— 核显 / CPU 可跑（int4 量化后 <2GB，无独显也能推理）——
+	{"id": "Qwen/Qwen2.5-0.5B-Instruct", "name": "Qwen2.5-0.5B", "size_gb": 1.0, "tier": "核显/CPU 可跑（int4）", "desc": "极轻量，核显首选"},
+	{"id": "Qwen/Qwen3-0.6B", "name": "Qwen3-0.6B", "size_gb": 1.5, "tier": "核显/CPU 可跑（int4）", "desc": "轻量，支持思考模式"},
+	{"id": "Qwen/Qwen1.5-0.5B-Chat", "name": "Qwen1.5-0.5B", "size_gb": 1.0, "tier": "核显/CPU 可跑（int4）", "desc": "经典小模型"},
+	{"id": "Qwen/Qwen2.5-1.5B-Instruct", "name": "Qwen2.5-1.5B", "size_gb": 3.1, "tier": "核显/CPU 可跑（int4）", "desc": "小模型，速度质量均衡"},
+	{"id": "Qwen/Qwen2.5-Coder-1.5B-Instruct", "name": "Qwen2.5-Coder-1.5B", "size_gb": 3.1, "tier": "核显/CPU 可跑（int4）", "desc": "编程小模型"},
+	{"id": "Qwen/Qwen2.5-Math-1.5B-Instruct", "name": "Qwen2.5-Math-1.5B", "size_gb": 3.1, "tier": "核显/CPU 可跑（int4）", "desc": "数学小模型"},
+	{"id": "Qwen/Qwen1.5-1.8B-Chat", "name": "Qwen1.5-1.8B", "size_gb": 3.6, "tier": "核显/CPU 可跑（int4）", "desc": "轻量对话"},
+	{"id": "Qwen/Qwen2-1.5B-Instruct", "name": "Qwen2-1.5B", "size_gb": 3.1, "tier": "核显/CPU 可跑（int4）", "desc": "Qwen2 系小模型"},
+	{"id": "Qwen/Qwen2.5-0.5B", "name": "Qwen2.5-0.5B-Base", "size_gb": 1.0, "tier": "核显/CPU 可跑（int4）", "desc": "基座版（需自行微调）"},
+	{"id": "Qwen/Qwen2.5-Coder-0.5B-Instruct", "name": "Qwen2.5-Coder-0.5B", "size_gb": 1.0, "tier": "核显/CPU 可跑（int4）", "desc": "轻量编程模型"},
+	// —— 6GB 显卡推荐（4bit 微调 / 8bit 推理）——
 	{"id": "Qwen/Qwen3-1.7B", "name": "Qwen3-1.7B", "size_gb": 3.6, "tier": "6GB 显卡推荐", "desc": "快，日常对话够用"},
 	{"id": "Qwen/Qwen3-4B", "name": "Qwen3-4B", "size_gb": 8.1, "tier": "6GB 显卡推荐（4bit 微调）", "desc": "质量/速度平衡，当前默认"},
-	{"id": "Qwen/Qwen3-8B", "name": "Qwen3-8B", "size_gb": 16.0, "tier": "12GB+ 显卡", "desc": "更强，需大显存"},
-	{"id": "Qwen/Qwen3-0.6B", "name": "Qwen3-0.6B", "size_gb": 1.5, "tier": "集显/低配", "desc": "极轻量"},
 	{"id": "Qwen/Qwen2.5-3B-Instruct", "name": "Qwen2.5-3B", "size_gb": 6.1, "tier": "6GB 显卡", "desc": "2.5 系，稳妥"},
+	{"id": "Qwen/Qwen2.5-Coder-3B-Instruct", "name": "Qwen2.5-Coder-3B", "size_gb": 6.2, "tier": "6GB 显卡", "desc": "编程 3B"},
+	{"id": "Qwen/Qwen2-VL-2B-Instruct", "name": "Qwen2-VL-2B", "size_gb": 5.0, "tier": "6GB 显卡", "desc": "视觉语言 2B"},
+	{"id": "Qwen/Qwen2.5-VL-3B-Instruct", "name": "Qwen2.5-VL-3B", "size_gb": 7.0, "tier": "6GB 显卡", "desc": "视觉语言 3B"},
+	{"id": "DeepSeek/DeepSeek-R1-Distill-Qwen-1.5B", "name": "DeepSeek-R1-1.5B", "size_gb": 3.2, "tier": "6GB 显卡", "desc": "推理蒸馏小模型"},
+	{"id": "OpenBMB/MiniCPM3-4B", "name": "MiniCPM3-4B", "size_gb": 8.0, "tier": "6GB 显卡", "desc": "国产 4B 强模型"},
+	// —— 12GB 显卡推荐 ——
+	{"id": "Qwen/Qwen3-8B", "name": "Qwen3-8B", "size_gb": 16.0, "tier": "12GB+ 显卡", "desc": "更强，需大显存"},
 	{"id": "Qwen/Qwen2.5-7B-Instruct", "name": "Qwen2.5-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "2.5 系大模型"},
+	{"id": "Qwen/Qwen2.5-Coder-7B-Instruct", "name": "Qwen2.5-Coder-7B", "size_gb": 15.3, "tier": "12GB+ 显卡", "desc": "编程 7B"},
+	{"id": "Qwen/Qwen2.5-Math-7B-Instruct", "name": "Qwen2.5-Math-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "数学 7B"},
+	{"id": "Qwen/Qwen2-VL-7B-Instruct", "name": "Qwen2-VL-7B", "size_gb": 18.0, "tier": "12GB+ 显卡", "desc": "视觉语言 7B"},
+	{"id": "Qwen/Qwen2.5-VL-7B-Instruct", "name": "Qwen2.5-VL-7B", "size_gb": 19.0, "tier": "12GB+ 显卡", "desc": "视觉语言 7B 新版"},
+	{"id": "Qwen/Qwen2-7B-Instruct", "name": "Qwen2-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "Qwen2 7B"},
+	{"id": "Qwen/Qwen1.5-7B-Chat", "name": "Qwen1.5-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "Qwen1.5 7B"},
+	{"id": "DeepSeek/DeepSeek-R1-Distill-Qwen-7B", "name": "DeepSeek-R1-7B", "size_gb": 15.0, "tier": "12GB+ 显卡", "desc": "推理蒸馏 7B"},
+	{"id": "ZhipuAI/chatglm3-6b", "name": "ChatGLM3-6B", "size_gb": 12.5, "tier": "12GB+ 显卡", "desc": "智谱 GLM3"},
+	{"id": "ZhipuAI/glm-4-9b-chat", "name": "GLM-4-9B", "size_gb": 18.0, "tier": "12GB+ 显卡", "desc": "智谱 GLM4"},
+	{"id": "OpenBMB/MiniCPM-V-2_6", "name": "MiniCPM-V-2.6", "size_gb": 16.0, "tier": "12GB+ 显卡", "desc": "多模态 8B"},
+	// —— 16GB+ 显卡 ——
+	{"id": "Qwen/Qwen2.5-14B-Instruct", "name": "Qwen2.5-14B", "size_gb": 29.0, "tier": "16GB+ 显卡", "desc": "2.5 系 14B"},
+	{"id": "Qwen/Qwen3-14B", "name": "Qwen3-14B", "size_gb": 28.0, "tier": "16GB+ 显卡", "desc": "Qwen3 14B"},
+	{"id": "Qwen/Qwen2.5-Coder-14B-Instruct", "name": "Qwen2.5-Coder-14B", "size_gb": 29.0, "tier": "16GB+ 显卡", "desc": "编程 14B"},
+	{"id": "DeepSeek/DeepSeek-R1-Distill-Qwen-14B", "name": "DeepSeek-R1-14B", "size_gb": 29.0, "tier": "16GB+ 显卡", "desc": "推理蒸馏 14B"},
+	// —— 24GB+ 显卡 ——
+	{"id": "Qwen/Qwen3-30B-A3B", "name": "Qwen3-30B-A3B", "size_gb": 18.5, "tier": "24GB+ 显卡", "desc": "MoE 激活 3B，速度快"},
+	{"id": "Qwen/Qwen3-32B", "name": "Qwen3-32B", "size_gb": 65.0, "tier": "24GB+ 显卡", "desc": "Qwen3 32B 满血"},
+	{"id": "Qwen/Qwen2.5-32B-Instruct", "name": "Qwen2.5-32B", "size_gb": 65.0, "tier": "24GB+ 显卡", "desc": "2.5 系 32B"},
+	{"id": "Qwen/QwQ-32B", "name": "QwQ-32B", "size_gb": 65.0, "tier": "24GB+ 显卡", "desc": "推理专用 32B"},
+	{"id": "Qwen/Qwen2.5-72B-Instruct", "name": "Qwen2.5-72B", "size_gb": 145.0, "tier": "24GB+ 显卡（量化）", "desc": "2.5 系 72B"},
+	// —— 服务器级 ——
+	{"id": "Qwen/Qwen3-235B-A22B", "name": "Qwen3-235B-A22B", "size_gb": 140.0, "tier": "服务器级", "desc": "MoE 旗舰"},
 }
 
 // ---------------- 训练任务管理 ----------------
 
 type TrainJob struct {
 	mu       sync.Mutex
-	Running  bool   `json:"running"`
-	Stage    string `json:"stage"`
-	Step     int    `json:"step"`
-	Total    int    `json:"total"`
+	Running  bool    `json:"running"`
+	Stage    string  `json:"stage"`
+	Step     int     `json:"step"`
+	Total    int     `json:"total"`
 	Loss     float64 `json:"loss"`
-	LogFile  string `json:"log_file"`
-	Chat     string `json:"chat"`
-	Persona  string `json:"persona"`
-	Out      string `json:"out"`
-	Started  string `json:"started"`
+	LogFile  string  `json:"log_file"`
+	Chat     string  `json:"chat"`
+	Persona  string  `json:"persona"`
+	Out      string  `json:"out"`
+	Started  string  `json:"started"`
+	DLSize   float64 `json:"dl_size"`  // 下载已用 MB
+	DLSpeed  float64 `json:"dl_speed"` // 下载速度 MB/s
 	proc     *exec.Cmd
 	serveURL string
 }
@@ -172,6 +214,8 @@ func (j *TrainJob) RunningState() map[string]interface{} {
 		"out":      j.Out,
 		"started":  j.Started,
 		"log_file": j.LogFile,
+		"dl_size":  round1(j.DLSize),
+		"dl_speed": round1(j.DLSpeed),
 	}
 }
 
@@ -329,6 +373,11 @@ func ModelDownload(modelID string) error {
 
 	logFile := filepath.Join(dataDir, "model_dl.log")
 	os.Remove(logFile)
+	name := modelID
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	target := filepath.Join(modelDir, name)
 	dl := exec.Command(pyExe, "-c",
 		"import sys; sys.stdout.reconfigure(encoding='utf-8', errors='replace');"+
 			"from modelscope import snapshot_download; import os,time;"+
@@ -348,6 +397,7 @@ func ModelDownload(modelID string) error {
 	j.Persona = "download"
 	j.LogFile = logFile
 	j.Started = time.Now().Format("2006-01-02 15:04:05")
+	j.DLSize, j.DLSpeed = 0, 0
 	j.proc = dl
 	j.mu.Unlock()
 	go func() {
@@ -355,10 +405,178 @@ func ModelDownload(modelID string) error {
 		j.mu.Lock()
 		j.Running = false
 		j.Stage = "下载完成"
+		j.DLSpeed = 0
 		j.mu.Unlock()
 	}()
 	go j.watchLog(logFile)
+	// 下载速度轮询：统计目标目录大小增量
+	go func() {
+		prev := 0.0
+		t0 := time.Now()
+		for {
+			time.Sleep(2 * time.Second)
+			j.mu.Lock()
+			if !j.Running || j.Persona != "download" {
+				j.mu.Unlock()
+				return
+			}
+			cur := dirSize(target) / 1e6
+			dt := time.Since(t0).Seconds()
+			if dt >= 2 {
+				j.DLSpeed = (cur - prev) / dt
+				if j.DLSpeed < 0 {
+					j.DLSpeed = 0
+				}
+				prev = cur
+				t0 = time.Now()
+			}
+			j.DLSize = cur
+			j.mu.Unlock()
+		}
+	}()
 	return nil
+}
+
+// ---------------- 推理服务手动启停 ----------------
+
+var serveMu sync.Mutex
+var serveProc *exec.Cmd
+
+// ServeStart 手动启动数字分身推理服务（serve_twin.py）
+func ServeStart(model, portStr string) (map[string]interface{}, error) {
+	serveMu.Lock()
+	defer serveMu.Unlock()
+	if serveProc != nil && processAlive(serveProc.Process.Pid) {
+		return nil, fmtErr("推理服务已在运行，可先停止再重启")
+	}
+	port, _ := strconv.Atoi(portStr)
+	if port == 0 {
+		port = 5000
+	}
+	if model == "" {
+		model = defaultServeModel()
+	}
+	if model == "" {
+		return nil, fmtErr("没有可用模型。请先在「训练」页下载或选择本地模型")
+	}
+	if _, err := os.Stat(filepath.Join(model, "config.json")); err != nil {
+		return nil, fmtErr("模型目录不存在或缺少 config.json: " + model)
+	}
+	logFile := filepath.Join(dataDir, "serve_job.log")
+	os.Remove(logFile)
+	f, err := os.Create(logFile)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{
+		filepath.Join(wd, "scripts", "serve_twin.py"),
+		"--model", model,
+		"--port", strconv.Itoa(port),
+		"--bits", "8",
+	}
+	cmd := exec.Command(pyExe, args...)
+	cmd.Dir = wd
+	cmd.Stdout = f
+	cmd.Stderr = f
+	if err := cmd.Start(); err != nil {
+		f.Close()
+		return nil, err
+	}
+	serveProc = cmd
+	go func() {
+		cmd.Wait()
+		f.Close()
+		serveMu.Lock()
+		serveProc = nil
+		serveMu.Unlock()
+	}()
+	return map[string]interface{}{"ok": true, "msg": "推理服务启动中…", "port": port, "model": model, "log": logFile}, nil
+}
+
+// ServeStop 停止推理服务
+func ServeStop() {
+	serveMu.Lock()
+	defer serveMu.Unlock()
+	if serveProc != nil {
+		execCommand("taskkill", "/PID", strconv.Itoa(serveProc.Process.Pid), "/T", "/F").Run()
+		serveProc = nil
+	}
+}
+
+// defaultServeModel 选择默认推理模型：优先 *-merged，其次本地最大模型
+func defaultServeModel() string {
+	ms := LocalModels()
+	if len(ms) == 0 {
+		return ""
+	}
+	for _, m := range ms {
+		if n, ok := m["name"].(string); ok && strings.Contains(n, "merged") {
+			if p, ok := m["path"].(string); ok {
+				return p
+			}
+		}
+	}
+	if p, ok := ms[0]["path"].(string); ok {
+		return p
+	}
+	return ""
+}
+
+// ---------------- 模型管理（删除/重命名） ----------------
+
+// modelRoots 返回允许管理的模型根目录（exe/models 与 ../ai-twin/models）
+func modelRoots() []string {
+	roots := []string{modelDir}
+	if s := filepath.Join(wd, "..", "ai-twin", "models"); s != modelDir {
+		roots = append(roots, s)
+	}
+	return roots
+}
+
+// inModelRoot 校验 path 是否在某个模型根目录的一级子目录内（防路径穿越）
+func inModelRoot(path string) (string, bool) {
+	clean := filepath.Clean(path)
+	for _, r := range modelRoots() {
+		rr := filepath.Clean(r)
+		if clean == rr {
+			return "", false // 根目录本身不可删
+		}
+		if strings.HasPrefix(clean, rr+string(os.PathSeparator)) {
+			rel, _ := filepath.Rel(rr, clean)
+			if !strings.Contains(rel, string(os.PathSeparator)) {
+				return rr, true // 仅允许一级子目录（模型目录本身）
+			}
+		}
+	}
+	return "", false
+}
+
+// ModelDelete 删除本地模型目录（不可逆，前端需二次确认）
+func ModelDelete(path string) error {
+	if _, ok := inModelRoot(path); !ok {
+		return fmtErr("只允许删除 models/ 下的模型目录")
+	}
+	if strings.HasSuffix(strings.ToLower(path), ".exe") || strings.HasSuffix(strings.ToLower(path), ".py") {
+		return fmtErr("不是有效的模型目录")
+	}
+	return os.RemoveAll(path)
+}
+
+// ModelRename 重命名本地模型目录
+func ModelRename(path, newName string) error {
+	root, ok := inModelRoot(path)
+	if !ok {
+		return fmtErr("只允许重命名 models/ 下的模型目录")
+	}
+	newName = strings.TrimSpace(newName)
+	if newName == "" || strings.ContainsAny(newName, `\/:*?"<>|`) {
+		return fmtErr("模型名不合法（不能包含 \\ / : * ? \" < > |）")
+	}
+	np := filepath.Join(root, newName)
+	if _, err := os.Stat(np); err == nil {
+		return fmtErr("已存在同名目录")
+	}
+	return os.Rename(path, np)
 }
 
 func fmtErr(s string) error {

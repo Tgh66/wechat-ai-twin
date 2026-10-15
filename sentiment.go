@@ -309,6 +309,45 @@ func (d *DB) Search(chat, kw string) map[string]interface{} {
 	return map[string]interface{}{"hits": hits, "count": len(hits)}
 }
 
+// SentimentMsgs 返回某会话积极/消极消息列表（最近消息优先，含内容/时间/说话方）
+// kind: "pos" 积极（score>0）| "neg" 消极（score<0）
+func (d *DB) SentimentMsgs(chat, kind string, limit int) map[string]interface{} {
+	if kind != "pos" && kind != "neg" {
+		kind = "pos"
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := d.conn.Query("SELECT is_self, ts, content FROM msgs WHERE name=? AND type='文本' AND LENGTH(content) BETWEEN 1 AND 150 ORDER BY ts DESC LIMIT 8000", chat)
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}
+	}
+	defer rows.Close()
+	type msg struct {
+		Self    bool   `json:"self"`
+		TS      int64  `json:"ts"`
+		Content string `json:"content"`
+		Score   int    `json:"score"`
+	}
+	out := []msg{}
+	for rows.Next() {
+		var self int
+		var ts int64
+		var c string
+		rows.Scan(&self, &ts, &c)
+		s := scoreText(c)
+		if kind == "pos" && s > 0 {
+			out = append(out, msg{self == 1, ts, c, s})
+		} else if kind == "neg" && s < 0 {
+			out = append(out, msg{self == 1, ts, c, s})
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	return map[string]interface{}{"msgs": out, "kind": kind, "count": len(out), "chat": chat}
+}
+
 // ---------------- 工具 ----------------
 
 func scoreText(c string) int {

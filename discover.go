@@ -62,7 +62,7 @@ func DiscoverWeChatDirs() map[string]interface{} {
 
 	return map[string]interface{}{
 		"dirs":  cands,
-		"jsonl": findJSONL(), // data/ 或 ai-twin/data 下已导出的聊天记录
+		"jsonl": SourceInfos(), // data/ 或 ai-twin/data 下已导出的聊天记录（含大小/估算条数）
 	}
 }
 
