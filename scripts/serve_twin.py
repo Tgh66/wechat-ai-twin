@@ -43,7 +43,7 @@ if tok.pad_token_id is None or tok.pad_token_id < 0:
 eos_ids = [248046]  # <|im_end|>
 print(f"[serve] 加载完成 {time.time()-t0:.1f}s, eos={eos_ids}", flush=True)
 
-SYSTEM = "你是微信用户\"我\"的数字分身。你正在微信上和好友聊天，请用我真实、自然的说话方式、语气和习惯回复对方。要求：1) 回答要有实质内容，针对对方的话给出具体回应或表达想法；2) 简洁直接，像真人发微信，一般 10-50 个字；3) 可以偶尔用“哈哈”“嗯嗯”等口语词，但绝不能整句只发表情或只回“？？”。"
+SYSTEM = "你是微信用户\"我\"的数字分身。你正在微信上和好友聊天，请用我真实、自然的说话方式、语气和习惯回复对方。要求：1) 像真人微信聊天一样，把回复拆成 1-8 条短消息（每条 5-40 字），每条消息单独占一行，模拟连发多条微信；2) 每条都要有实质内容，针对对方的话给出具体回应；3) 简洁直接，可以偶尔用“哈哈”“嗯嗯”等口语词，但绝不能整条只发表情或只回“？？”。"
 
 @torch.inference_mode()
 def generate_once(prompt_tokens, max_tokens=240, temp=0.8):
@@ -118,7 +118,7 @@ def chat(msg: str, history: list):
     best, best_q = "", -99
     for temp in [0.8, 0.9, 0.7]:
         try:
-            cand = generate_once(prompt, max_tokens=130, temp=temp)
+            cand = generate_once(prompt, max_tokens=320, temp=temp)
         except Exception:
             continue
         q = quality_score(cand)
@@ -128,9 +128,39 @@ def chat(msg: str, history: list):
             break
     if best_q < 0:
         best = "在呢，刚看到，咋啦？"
-    # 只保留第一条回复（模型有时会复述多轮）
-    best = first_reply(best)
-    return best
+    return split_replies(best)
+
+
+def split_replies(t: str):
+    """把生成结果拆成 1-8 条微信短消息（每条一行）"""
+    import re
+    t = t.strip()
+    parts = []
+    for ln in t.split("\n"):
+        ln = ln.strip()
+        ln = re.sub(r"^[\d一二三四五六七八九十][.、)）]?\s*", "", ln)  # 去序号
+        ln = ln.lstrip("-•·* ")
+        if not ln:
+            continue
+        parts.append(ln)
+    # 去重（保留顺序）
+    seen, out = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    # 过短碎片合并到上一条，避免一堆“嗯”“好”
+    merged = []
+    for p in out:
+        if merged and len(p) <= 4 and len(merged[-1]) > 6:
+            merged[-1] += "，" + p
+        else:
+            merged.append(p)
+    while len(merged) > 8:
+        merged.pop()
+    if not merged:
+        merged = ["在呢，刚看到，咋啦？"]
+    return [m.strip()[:60] for m in merged]
 
 
 def first_reply(t: str):
@@ -164,9 +194,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             t0 = time.time()
-            reply = chat(msg, body.get("history") or [])
-            print(f"[chat] {time.time()-t0:.1f}s: {msg[:30]} -> {reply[:30]}", flush=True)
-            self._json({"reply": reply})
+            replies = chat(msg, body.get("history") or [])
+            print(f"[chat] {time.time()-t0:.1f}s: {msg[:30]} -> {len(replies)} 条", flush=True)
+            self._json({"reply": replies[0], "replies": replies, "count": len(replies)})
         except Exception as e:
             import traceback
             traceback.print_exc()

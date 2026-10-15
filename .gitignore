@@ -9,7 +9,7 @@ venv/
 chats.db*
 
 # 构建产物
-WeChatTwin.exe
+*.exe
 *.zip
 dist/
 build/

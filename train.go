@@ -167,6 +167,7 @@ type TrainJob struct {
 	Started  string  `json:"started"`
 	DLSize   float64 `json:"dl_size"`  // 下载已用 MB
 	DLSpeed  float64 `json:"dl_speed"` // 下载速度 MB/s
+	DLTotal  float64 `json:"dl_total"` // 下载总大小 MB（0=未知）
 	proc     *exec.Cmd
 	serveURL string
 }
@@ -216,6 +217,7 @@ func (j *TrainJob) RunningState() map[string]interface{} {
 		"log_file": j.LogFile,
 		"dl_size":  round1(j.DLSize),
 		"dl_speed": round1(j.DLSpeed),
+		"dl_total": round1(j.DLTotal),
 	}
 }
 
@@ -302,6 +304,16 @@ func (j *TrainJob) watchLog(path string) {
 		}
 		f.Close()
 		for _, ln := range lines {
+			if strings.HasPrefix(ln, "[DLTOTAL]") {
+				fields := strings.Fields(ln)
+				if len(fields) >= 2 {
+					if v, err := strconv.ParseFloat(fields[1], 64); err == nil {
+						j.mu.Lock()
+						j.DLTotal = v / 1e6 // 字节 -> MB
+						j.mu.Unlock()
+					}
+				}
+			}
 			if strings.HasPrefix(ln, "[STAGE]") {
 				fields := strings.Fields(ln)
 				if len(fields) >= 2 {
@@ -383,6 +395,7 @@ func ModelDownload(modelID string) error {
 			"from modelscope import snapshot_download; import os,time;"+
 			"T=r'"+modelDir+"';"+
 			"mid='"+modelID+"'; name=mid.split('/')[-1]; target=os.path.join(T,name); os.makedirs(target, exist_ok=True);"+
+			"try:\n from modelscope.hub.api import HubApi\n api=HubApi(); fl=api.get_model_files(mid)\n tot=sum((f.size if hasattr(f,'size') else 0) for f in fl)\n print('[DLTOTAL] %d' % tot, flush=True)\n except Exception:\n print('[DLTOTAL] 0', flush=True);"+
 			"print('[DL] start '+mid, flush=True);"+
 			"snapshot_download(mid, local_dir=target);"+
 			"print('[DL] done', flush=True)")
@@ -397,7 +410,7 @@ func ModelDownload(modelID string) error {
 	j.Persona = "download"
 	j.LogFile = logFile
 	j.Started = time.Now().Format("2006-01-02 15:04:05")
-	j.DLSize, j.DLSpeed = 0, 0
+	j.DLSize, j.DLSpeed, j.DLTotal = 0, 0, 0
 	j.proc = dl
 	j.mu.Unlock()
 	go func() {

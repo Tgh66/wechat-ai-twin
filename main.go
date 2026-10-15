@@ -287,7 +287,7 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "meta":
 		writeJSON(map[string]interface{}{
-			"version":   "1.1.2",
+			"version":   "1.1.3",
 			"engine":    "go",
 			"db_exists": GDB.Exists(),
 			"db_count":  GDB.Count(),
@@ -312,6 +312,31 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(map[string]interface{}{"ok": true, "msg": "正在合并去重重建索引…", "files": len(files)})
 	case path == "discover":
 		writeJSON(DiscoverWeChatDirs())
+	case path == "wechat_scan":
+		pid, pname := findWeChatProcess()
+		dbs := scanEncryptedWeChatDBs()
+		writeJSON(map[string]interface{}{
+			"wechat_running": pid != 0,
+			"process":        pname,
+			"pid":            pid,
+			"dbs":            dbs,
+			"total":          len(dbs),
+			"total_size_mb":  func() float64 {
+				var s int64
+				for _, d := range dbs {
+					s += d.Size
+				}
+				return float64(s) / 1e6
+			}(),
+		})
+	case path == "wechat_decrypt":
+		if err := StartWeChatDecrypt(); err != nil {
+			writeErr(err.Error(), 400)
+			return
+		}
+		writeJSON(map[string]interface{}{"ok": true, "msg": "解密任务已启动，请保持微信运行"})
+	case path == "wechat_decrypt_status":
+		writeJSON(decryptJobState())
 	case path == "import":
 		p := q.Get("path")
 		if p == "" {

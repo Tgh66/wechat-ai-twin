@@ -302,14 +302,23 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
       <div class="page" id="p-data">
         <div class="cards" id="dataCards"></div>
         <div class="chartbox full">
-          <h3>聊天记录数据源（JSONL 导出）</h3>
+          <h3>聊天记录数据源（JSONL 导出 / 自动解密）</h3>
           <div style="font-size:12px;color:var(--tx2);line-height:1.8;margin-bottom:10px;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px">
-            ⚠️ 微信 4.0 的聊天数据库为加密格式，本工具读取的是<b>已导出的 JSONL</b>。若记录不全，请在微信 PC 端备份/导出完整记录后放入 <code>data/</code> 目录再重建索引。
+            💡 微信 4.0 的聊天数据库（<code>E:\xwechat_files\...</code>）为 SQLCipher 加密格式，无需手动导出。<b>保持微信登录运行</b>，点下方「自动解密微信数据库」，本工具会全盘扫描加密库、从微信进程提取密钥并自动解密导入。
           </div>
           <div id="dataSrcList"></div>
           <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
             <button class="btn" onclick="reindexAll()">🔄 合并去重并重建索引</button>
             <button class="btn" style="background:var(--card2);border:1px solid var(--line);color:var(--tx)" onclick="discover()">🔎 自动搜索数据目录</button>
+            <button class="btn" style="background:#2f855a;color:#fff" onclick="wxDecrypt()">🔓 自动解密微信数据库</button>
+          </div>
+          <div id="wxDecryptBox" style="display:none;margin-top:12px;padding:12px;background:var(--card2);border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.9">
+            <div id="wxDecryptStage">—</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+              <div style="flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden"><div id="wxDecryptBar" style="height:100%;width:0;background:#2f855a;transition:width .3s"></div></div>
+              <span id="wxDecryptPct" style="white-space:nowrap">0%</span>
+            </div>
+            <div id="wxDecryptMsg" style="color:var(--tx2);margin-top:4px">—</div>
           </div>
         </div>
       </div>
@@ -743,17 +752,20 @@ async function trainPoll(){
 }
 function renderTrainStatus(ts){
   $('trStage').textContent = ts.running ? ts.stage : (ts.stage==='已停止' ? '已停止' : '空闲');
-  const pct = ts.total>0 ? Math.round(ts.step/ts.total*100) : (ts.running ? 5 : 0);
+  let pct = ts.total>0 ? Math.round(ts.step/ts.total*100) : (ts.running ? 5 : 0);
+  if(ts.running && ts.persona==='download' && ts.dl_total>0 && ts.dl_size>=0){
+    pct = Math.min(100, Math.round(ts.dl_size/ts.dl_total*100));
+  }
   $('trBar').style.width = pct+'%';
   $('trPct').textContent = pct+'%';
   $('trJobDesc').textContent = ts.running
     ? (ts.persona==='download'
-      ? `下载 ${ts.chat} · ${fmt(ts.dl_size||0)}MB${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}`
+      ? `下载 ${ts.chat} · ${fmt(ts.dl_size||0)}MB${ts.dl_total>0?' / '+fmt(ts.dl_total)+'MB ('+pct+'%)':''}${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}`
       : `${ts.chat} / ${ts.persona==='other'?'对方':'我'} / step ${ts.step}/${ts.total} / loss ${ts.loss}`)
     : (ts.stage ? ts.stage : '无');
   $('trInfo').textContent = ts.running
     ? `开始于 ${ts.started} · 输出: ${ts.out||''}`
-    : (ts.dl_size ? `最近一次下载: ${fmt(ts.dl_size)}MB${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}` : '');
+    : (ts.dl_size ? `最近一次下载: ${fmt(ts.dl_size)}MB${ts.dl_total>0?' / '+fmt(ts.dl_total)+'MB':''}${ts.dl_speed>0?' @ '+ts.dl_speed.toFixed(1)+'MB/s':''}` : '');
 }
 async function startTrain(){
   const chat = $('trChat').value;
@@ -835,6 +847,23 @@ async function reindexAll(){
     $('loadingText').textContent = `重建中… 当前 ${fmt(s.count)} 条 (${((Date.now()-t0)/1000).toFixed(0)}s)`;
     if(!s.indexing && s.count>0){ clearInterval(timer); loading(false); await loadChats(); loadDataPanel(); }
   }, 1500);
+}
+
+// ---------------- 微信加密库自动解密 ----------------
+async function wxDecrypt(){
+  $('wxDecryptBox').style.display = 'block';
+  $('wxDecryptStage').textContent = '启动解密任务…';
+  const r = await api('wechat_decrypt');
+  if(r.error){ $('wxDecryptMsg').textContent = '❌ '+r.error; return; }
+  $('wxDecryptMsg').textContent = r.msg;
+  const t = setInterval(async ()=>{
+    const s = await api('wechat_decrypt_status');
+    $('wxDecryptStage').textContent = s.stage + (s.key_found ? ' 🔑 已找到密钥' : '');
+    $('wxDecryptBar').style.width = (s.progress||0)+'%';
+    $('wxDecryptPct').textContent = (s.progress||0)+'%';
+    $('wxDecryptMsg').textContent = s.message || '';
+    if(!s.running){ clearInterval(t); if(s.added>0){ await loadChats(); loadDataPanel(); } }
+  }, 1200);
 }
 
 // ---------------- 数字分身：推理服务手动控制 ----------------
@@ -941,7 +970,16 @@ async function sendTwin(){
   try{
     const r = await fetch('/api/twin', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({msg: txt, chat: curChat})});
     const d = await r.json();
-    if(d.reply){ addMsg('ai', d.reply); $('twinState').textContent = '已连接'; $('twinState').className = 'badge ok'; }
+    if(d.reply){
+      // 分身可一次连发 1-8 条短消息（微信风格）
+      const list = Array.isArray(d.replies) && d.replies.length>1 ? d.replies : [d.reply];
+      let delay = 0;
+      list.forEach((m, i) => {
+        setTimeout(()=>{ addMsg('ai', m); }, delay);
+        delay += 350 + Math.min(1200, m.length*8);
+      });
+      setTimeout(()=>{ $('twinState').textContent = '已连接'; $('twinState').className = 'badge ok'; }, delay);
+    }
     else if(d.error){ addMsg('ai', '⚠️ '+d.error); $('twinState').textContent = '未连接'; $('twinState').className = 'badge off'; }
   }catch(e){
     addMsg('ai', '⚠️ 分身服务未启动。请在 Python 环境中运行推理服务。');
