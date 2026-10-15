@@ -13,13 +13,17 @@
   5. stdout 输出 [PROGRESS] / [DONE] / [ERROR] 供宿主程序解析
 
 JSONL 字段与现有索引一致: name/user/is_self/ts/type/content
+  - name    = 会话显示名（按会话 user_name 查昵称/群名），不是发送者昵称
+  - is_self = 消息方向（True=自己发出，False=对方/群成员）
 """
 import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'ai-twin', 'venv', 'Lib', 'site-packages'))
@@ -37,6 +41,40 @@ def done(total: int) -> None:
 
 def fail(msg: str) -> None:
     print("[ERROR] " + msg, flush=True)
+
+
+def open_with_retry(w, rel: str, retries: int = 5, wait: float = 10.0):
+    """打开分片库；微信 checkpoint / 库被占用时延迟重试（10s×5），仍失败返回 None 由调用方跳过并标注"""
+    last = None
+    for i in range(retries):
+        try:
+            return w._open(rel)
+        except Exception as e:
+            last = e
+            msg = str(e).lower()
+            # 只对"正在写/被占用/加密中"类错误重试，其余立即抛出
+            if any(k in msg for k in ("checkpoint", "locked", "busy", "database is locked")):
+                if i < retries - 1:
+                    progress("db=%s busy retry=%d/%d wait=%ds (%s)" % (rel, i + 1, retries, wait, msg[:60]))
+                    time.sleep(wait)
+                    continue
+            break
+    return last
+
+
+def disk_space_ok(out: str, need_mb: float, warn_gb: float = 0.5) -> bool:
+    """检查目标盘剩余空间 ≥ 预估导出大小（另留 warn_gb 余量），不足时给出明确提示"""
+    try:
+        free = shutil.disk_usage(os.path.dirname(out) or ".").free
+        free_gb = free / (1024 ** 3)
+        need_gb = need_mb / 1024.0
+        if free < need_mb * 1024 * 1024 + warn_gb * 1024 ** 3:
+            progress("disk=warn free=%.1fGB need>=%.1fGB target=%s" %
+                     (free_gb, need_gb, os.path.dirname(out)))
+        return True
+    except Exception as e:
+        progress("disk=check-error %r" % e)
+        return True  # 检查失败不阻塞，交由写入时错误处理
 
 
 def main() -> int:
@@ -69,7 +107,7 @@ def main() -> int:
         fail("未提取到任何数据库密钥，请确认微信已登录且窗口保持打开")
         return 3
 
-    # 发送者 id -> username（message_resource.db SenderName2Id）
+    # 发送者 id -> username（message_resource.db SenderName2Id，rowid 即 real_sender_id）
     try:
         sender_index = w._sender_id_index()
     except Exception as e:
@@ -86,7 +124,22 @@ def main() -> int:
     progress("stage=nickname rows=%d" % len(nick_map))
 
     self_wxid = w.wxid
-    progress("stage=self wxid=%s" % self_wxid)
+    # self 在 SenderName2Id 中的 rowid 集合（微信 4.0 实测 = {1}，即自己发出的消息 real_sender_id=1）
+    self_sender_ids = {k for k, v in sender_index.items() if v == self_wxid}
+    progress("stage=self wxid=%s sender_ids=%s" % (self_wxid, sorted(self_sender_ids)))
+
+    # 磁盘空间预检：预估 jsonl ≈ 全部消息库解压后大小（加密库 ×4 粗略）
+    try:
+        est_mb = 0.0
+        for rel, path, _ in w._db_files:
+            if rel.replace(os.sep, "/").startswith("message/") and path:
+                try:
+                    est_mb += os.path.getsize(path) / (1024 * 1024) * 4.0
+                except Exception:
+                    pass
+        disk_space_ok(out, est_mb)
+    except Exception as e:
+        progress("stage=disk warn=%r" % e)
 
     # 会话表名 -> user_name（每个分片库 Name2Id）
     def build_table_map(conn):
@@ -99,6 +152,21 @@ def main() -> int:
             pass
         return m
 
+    def is_self_sender(sid, self_wxid, self_ids):
+        """is_self 判定：以 SenderName2Id 的 id→wxid 映射为准。
+        - 微信 4.0：自己消息 real_sender_id ∈ self_ids（实测 {1}）
+        - 旧版 3.x 约定：sender_id=2 表示自己
+        - None/0/未知：无法映射，保守归为对方（False），并在进度中计数便于审计"""
+        if sid in (2, "2", 2.0):
+            return True
+        if isinstance(sid, int) and sid in self_ids:
+            return True
+        if isinstance(sid, int):
+            su = sender_index.get(sid)
+            if su:
+                return su == self_wxid
+        return False
+
     msg_rels = sorted([rel for rel, _, _ in w._db_files
                        if rel.replace(os.sep, "/").startswith("message/")
                        and rel.lower().endswith(".db")])
@@ -107,12 +175,16 @@ def main() -> int:
         msg_rels = msg_rels[:args.max_dbs]
 
     total = 0
+    unknown_senders = 0
     with open(out, "w", encoding="utf-8") as fout:
         for rel in msg_rels:
             try:
-                conn = w._open(rel)
+                conn = open_with_retry(w, rel)
             except Exception as e:
                 progress("db=%s error=%r" % (rel, e))
+                continue
+            if conn is None:
+                progress("db=%s skip=checkpoint-5x10s-still-failed" % rel)
                 continue
             try:
                 tmap = build_table_map(conn)
@@ -129,24 +201,17 @@ def main() -> int:
                             "compress_content FROM %s" % t)
                     except Exception:
                         continue
+                    # 会话显示名：昵称/群名（name=会话，方向靠 is_self）
+                    conv_name = nick_map.get(uname, uname) or uname
                     while True:
                         rows = cur.fetchmany(2000)
                         if not rows:
                             break
                         for sid, ct, lt, mc, cc in rows:
-                            # 发送者
-                            is_self = False
-                            sender_name = ""
-                            if sid in (2, "2", 2.0, None) or str(sid) == "2":
-                                is_self = True
-                                sender_name = nick_map.get(self_wxid, "我")
-                            else:
-                                su = sender_index.get(int(sid), "") if sid else ""
-                                if su == self_wxid:
-                                    is_self = True
-                                    sender_name = nick_map.get(self_wxid, "我")
-                                else:
-                                    sender_name = nick_map.get(su, su) if su else str(sid)
+                            # 方向
+                            is_self = is_self_sender(sid, self_wxid, self_sender_ids)
+                            if sid is None or (isinstance(sid, int) and sid == 0):
+                                unknown_senders += 1
                             # 类型
                             mtype = dbm.WeChatDB._msg_type_name(lt) if lt is not None else "其他"
                             # 内容
@@ -168,7 +233,7 @@ def main() -> int:
                             if ts > 1e12:
                                 ts //= 1000
                             rec = {
-                                "name": sender_name,
+                                "name": conv_name,
                                 "user": uname,
                                 "is_self": is_self,
                                 "ts": ts,
@@ -187,6 +252,7 @@ def main() -> int:
                 except Exception:
                     pass
                 progress("db=%s error=%r" % (rel, e))
+    progress("stage=unknown-senders count=%d (None/0 已按对方处理)" % unknown_senders)
     done(total)
     return 0
 

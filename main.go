@@ -34,7 +34,7 @@ var (
 )
 
 func init() {
-	// 以 exe 所在目录为根（兼容双击运行）
+	// 以 exe 所在目录为根（兼容双击运行）；--data/--port 可覆盖（见 main）
 	wd = exeDir()
 	dataDir = filepath.Join(wd, "data")
 	modelDir = filepath.Join(wd, "models")
@@ -58,7 +58,18 @@ func exeDir() string {
 
 func main() {
 	noBrowser := flag.Bool("nobrowser", false, "不自动打开浏览器")
+	dataFlag := flag.String("data", "", "数据目录（默认 exe 同级 data/，用于多份部署隔离）")
+	portFlag := flag.String("port", "", "HTTP 端口（默认 7860）")
 	flag.Parse()
+
+	if *dataFlag != "" {
+		dataDir = *dataFlag
+		dbPath = filepath.Join(dataDir, "chats.db")
+		_ = os.MkdirAll(dataDir, 0755)
+	}
+	if *portFlag != "" {
+		port = *portFlag
+	}
 
 	log.SetOutput(os.Stdout)
 	fmt.Println(strings.Repeat("=", 54))
@@ -76,13 +87,20 @@ func main() {
 	}
 	defer GDB.Close()
 
+	// 全文索引就绪（FTS5 分批后台回填，不阻塞启动/API）
+	go func() {
+		for GDB.ensureFTSBatch() {
+			time.Sleep(80 * time.Millisecond)
+		}
+	}()
+
 	// 自动发现数据源：优先 data/*.jsonl，其次自动搜索微信目录
 	go autoLoadData()
 
-	// HTTP 服务
+	// HTTP 服务（端口占用给出明确提示）
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
-		log.Fatalf("端口被占用: %v", err)
+		log.Fatalf("端口 %s 被占用：可能已有 WeChatTwin 实例在运行（或换 --port 指定其他端口）。错误: %v", port, err)
 	}
 	mux := http.NewServeMux()
 	// 静态页面
@@ -287,7 +305,7 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "meta":
 		writeJSON(map[string]interface{}{
-			"version":   "1.1.6",
+			"version":   "1.2.0",
 			"engine":    "go",
 			"db_exists": GDB.Exists(),
 			"db_count":  GDB.Count(),
@@ -352,7 +370,10 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			"jsonl":    GDB.Source(),
 		})
 	case path == "chats":
-		chats := GDB.Chats()
+		// min=最小条数（默认 30），limit=数量上限（0=全部），前端"显示全部"用 min=1&limit=0
+		min := atoiOr(q.Get("min"), 30)
+		limit := atoiOr(q.Get("limit"), 500)
+		chats := GDB.Chats2(min, limit)
 		writeJSON(map[string]interface{}{"chats": chats, "count": len(chats)})
 	case path == "stats":
 		chat := q.Get("chat")
@@ -383,9 +404,25 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		limit := atoiOr(q.Get("limit"), 100)
 		writeJSON(GDB.SentimentMsgs(chat, kind, limit))
 	case path == "search":
-		chat := q.Get("chat")
+		// FTS5 全文搜索：q=关键词，page=页码，ps=每页，from/to=时间戳(秒)，text=1 仅文本
 		kw := q.Get("q")
-		writeJSON(GDB.Search(chat, kw))
+		page := atoiOr(q.Get("page"), 1)
+		ps := atoiOr(q.Get("ps"), 50)
+		from := int64(atoiOr(q.Get("from"), 0))
+		to := int64(atoiOr(q.Get("to"), 0))
+		onlyText := q.Get("text") == "1"
+		writeJSON(GDB.SearchMessages(kw, page, ps, from, to, onlyText))
+	case path == "export_train":
+		// 从索引导出训练数据 JSONL（P0-5：训练数据源不再依赖外部文件）
+		// min=会话最小条数（默认 30），返回导出条数与文件路径
+		min := atoiOr(q.Get("min"), 30)
+		out := filepath.Join(dataDir, "chat_messages_e.jsonl")
+		n, err := GDB.ExportChatMessages(out, min)
+		if err != nil {
+			writeJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(map[string]interface{}{"ok": true, "count": n, "file": out})
 	case path == "export":
 		chat := q.Get("chat")
 		fmt := q.Get("fmt")

@@ -1,0 +1,8 @@
+# 训练/推理依赖清单（CPU 版：无 NVIDIA GPU 机器用，全部 pip 在线安装）
+# 安装命令（在项目根目录执行，venv 为 ai-twin\venv 或项目 venv）：
+#   <venv>\Scripts\python.exe -m pip install -r scripts\requirements-train-cpu.txt
+# 国内网络加镜像： -i https://pypi.tuna.tsinghua.edu.cn/simple
+torch>=2.1
+transformers>=4.40
+peft>=0.9
+accelerate>=0.29

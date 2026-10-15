@@ -1,0 +1,6 @@
+# 训练/推理依赖清单（GPU 版：NVIDIA GPU + CUDA 机器用，在 CPU 版基础上加 bitsandbytes）
+# 安装命令（在项目根目录执行）：
+#   <venv>\Scripts\python.exe -m pip install -r scripts\requirements-train-cpu.txt
+#   <venv>\Scripts\python.exe -m pip install -r scripts\requirements-train-gpu.txt
+# 国内网络加镜像： -i https://pypi.tuna.tsinghua.edu.cn/simple
+bitsandbytes>=0.43

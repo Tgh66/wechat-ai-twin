@@ -20,6 +20,7 @@ import (
 // DB SQLite 索引封装
 type DB struct {
 	conn    *sql.DB
+	ftsConn *sql.DB // 独立连接：FTS 回填写入专用，避免阻塞主连接 API
 	mu      sync.RWMutex
 	indexMu sync.Mutex
 	source  string
@@ -33,6 +34,11 @@ func OpenDB(path string) (*DB, error) {
 	}
 	conn.SetMaxOpenConns(1) // 单写
 	d := &DB{conn: conn}
+	// FTS 回填独立连接（WAL 下可与主连接并发读写）
+	if fc, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)"); err == nil {
+		fc.SetMaxOpenConns(1)
+		d.ftsConn = fc
+	}
 	d.mu.RLock()
 	row := d.conn.QueryRow("SELECT COUNT(*) FROM msgs")
 	if err := row.Scan(&d.count); err != nil {
@@ -42,7 +48,14 @@ func OpenDB(path string) (*DB, error) {
 	return d, nil
 }
 
-func (d *DB) Close() { d.conn.Close() }
+func (d *DB) Close() {
+	if d.conn != nil {
+		d.conn.Close()
+	}
+	if d.ftsConn != nil {
+		d.ftsConn.Close()
+	}
+}
 func (d *DB) Exists() bool {
 	return d.count > 0
 }
@@ -83,6 +96,12 @@ func SourceInfos() []JSONLSource {
 	for _, pat := range roots {
 		files, _ := filepath.Glob(pat)
 		for _, f := range files {
+			// 训练导出物不参与索引重建（chat_messages_e.jsonl 由 /api/export_train 按需生成，
+			// train_cli.jsonl 是训练中间产物）——避免其变化触发 source_sig 全量重建丢数据
+			base := strings.ToLower(filepath.Base(f))
+			if base == "chat_messages_e.jsonl" || base == "train_cli.jsonl" {
+				continue
+			}
 			if seen[f] {
 				continue
 			}
@@ -394,9 +413,20 @@ type ChatInfo struct {
 	Other int64  `json:"other"`
 }
 
-// Chats 会话列表（毫秒级）
+// Chats 会话列表（兼容旧签名：默认 >=30 条、最多 500 个）
 func (d *DB) Chats() []ChatInfo {
-	rows, err := d.conn.Query("SELECT name, COUNT(*), SUM(is_self) FROM msgs GROUP BY name HAVING COUNT(*) >= 30 ORDER BY COUNT(*) DESC LIMIT 500")
+	return d.Chats2(30, 500)
+}
+
+// Chats2 会话列表（minMsgs=最小条数过滤，limit<=0 表示不限）
+func (d *DB) Chats2(minMsgs, limit int) []ChatInfo {
+	q := "SELECT name, COUNT(*), SUM(is_self) FROM msgs GROUP BY name HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC"
+	args := []interface{}{minMsgs}
+	if limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := d.conn.Query(q, args...)
 	if err != nil {
 		return []ChatInfo{}
 	}
@@ -412,6 +442,216 @@ func (d *DB) Chats() []ChatInfo {
 		}
 	}
 	return chats
+}
+
+// ExportChatMessages 从索引导出训练数据 JSONL（字段对齐 train_cli.py 解析：name/is_self/ts/type/content）
+// minMsgs=会话最小条数过滤；返回导出条数。供训练前自动生成 data/chat_messages_e.jsonl
+func (d *DB) ExportChatMessages(outPath string, minMsgs int) (int64, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	q := "SELECT name, is_self, ts, type, content FROM msgs"
+	args := []interface{}{}
+	if minMsgs > 0 {
+		// 先取满足条数的会话名，再导出其消息
+		q = "SELECT name, is_self, ts, type, content FROM msgs WHERE name IN (SELECT name FROM msgs GROUP BY name HAVING COUNT(*) >= ?)"
+		args = append(args, minMsgs)
+	}
+	rows, err := d.conn.Query(q+" ORDER BY id", args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	f, err := os.Create(outPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	bw := bufio.NewWriterSize(f, 1<<20)
+	var n int64
+	var name, typ, content string
+	var self int
+	var ts int64
+	for rows.Next() {
+		if err := rows.Scan(&name, &self, &ts, &typ, &content); err != nil {
+			continue
+		}
+		rec := map[string]interface{}{
+			"name":    name,
+			"is_self": self == 1,
+			"ts":      ts,
+			"type":    typ,
+			"content": content,
+		}
+		line, err := json.Marshal(rec)
+		if err != nil {
+			continue
+		}
+		bw.Write(line)
+		bw.WriteByte('\n')
+		n++
+	}
+	if err := bw.Flush(); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// ensureFTS 确保 FTS5 虚拟表存在（trigram tokenizer 支持中文 3 字子串匹配）
+func (d *DB) ensureFTS() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.conn.Exec("CREATE VIRTUAL TABLE IF NOT EXISTS msgs_fts USING fts5(content, name, tokenize='trigram')")
+}
+
+// ensureFTSBatch 增量回填一批 FTS（每批 5000 条，用独立 ftsConn 写入，不阻塞主连接 API）
+// 只索引文本消息（type='文本'，长度 3-500，排除图片/语音占位与超长文档）
+// 返回是否还有更多待回填；游标存 meta(fts_cursor)，完成置 meta(fts_done)=1
+func (d *DB) ensureFTSBatch() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.conn == nil {
+		return false
+	}
+	var done string
+	d.conn.QueryRow("SELECT v FROM meta WHERE k='fts_done'").Scan(&done)
+	if done == "1" {
+		return false
+	}
+	var last int64
+	d.conn.QueryRow("SELECT v FROM meta WHERE k='fts_cursor'").Scan(&last)
+	rows, err := d.conn.Query("SELECT id, content, name FROM msgs WHERE id > ? AND type='文本' AND length(content) BETWEEN 3 AND 500 ORDER BY id LIMIT 5000", last)
+	if err != nil {
+		return false
+	}
+	type frow struct {
+		id int64
+		c  string
+		n  string
+	}
+	items := []frow{}
+	maxID := last
+	for rows.Next() {
+		var f frow
+		if rows.Scan(&f.id, &f.c, &f.n) == nil {
+			items = append(items, f)
+			if f.id > maxID {
+				maxID = f.id
+			}
+		}
+	}
+	rows.Close()
+	if len(items) == 0 {
+		d.conn.Exec("INSERT OR REPLACE INTO meta(k,v) VALUES('fts_done','1')")
+		fmt.Printf("FTS 回填完成\n")
+		return false
+	}
+	// 写入用独立连接（WAL 并发；若与导入冲突 busy 则下次续填）
+	if d.ftsConn != nil {
+		if tx, err := d.ftsConn.Begin(); err == nil {
+			stmt, _ := tx.Prepare("INSERT OR REPLACE INTO msgs_fts(rowid, content, name) VALUES(?,?,?)")
+			for _, f := range items {
+				stmt.Exec(f.id, f.c, f.n)
+			}
+			tx.Commit()
+		}
+	} else {
+		tx, err := d.conn.Begin()
+		if err == nil {
+			stmt, _ := tx.Prepare("INSERT OR REPLACE INTO msgs_fts(rowid, content, name) VALUES(?,?,?)")
+			for _, f := range items {
+				stmt.Exec(f.id, f.c, f.n)
+			}
+			tx.Commit()
+		}
+	}
+	d.conn.Exec("INSERT OR REPLACE INTO meta(k,v) VALUES('fts_cursor',?)", maxID)
+	return true
+}
+
+// SearchMessages 全文搜索（FTS5 trigram + 分页 + 时间范围 + 类型过滤）
+// kw=关键词（3 字以上且 FTS 已回填完成走 FTS，否则 LIKE 回退），page 从 1 开始
+func (d *DB) SearchMessages(kw string, page, pageSize int, fromTs, toTs int64, onlyText bool) map[string]interface{} {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	// 确保 FTS 表存在（回填由后台批次进行）
+	d.ensureFTS()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	kw = strings.TrimSpace(kw)
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	method := "like"
+	if kw != "" {
+		r := []rune(kw)
+		if len(r) >= 3 {
+			var ftsDone string
+			d.conn.QueryRow("SELECT v FROM meta WHERE k='fts_done'").Scan(&ftsDone)
+			if ftsDone == "1" {
+				method = "fts"
+				where += " AND id IN (SELECT rowid FROM msgs_fts WHERE msgs_fts MATCH ?)"
+				args = append(args, "\""+strings.ReplaceAll(kw, "\"", "")+"\"")
+			} else {
+				where += " AND content LIKE ?"
+				args = append(args, "%"+kw+"%")
+			}
+		} else {
+			where += " AND content LIKE ?"
+			args = append(args, "%"+kw+"%")
+		}
+	}
+	if onlyText {
+		where += " AND type='文本'"
+	}
+	if fromTs > 0 {
+		where += " AND ts >= ?"
+		args = append(args, fromTs)
+	}
+	if toTs > 0 {
+		where += " AND ts <= ?"
+		args = append(args, toTs)
+	}
+	var total int64
+	d.conn.QueryRow("SELECT COUNT(*) FROM msgs "+where, args...).Scan(&total)
+
+	offset := (page - 1) * pageSize
+	q := "SELECT is_self, ts, type, content FROM msgs " + where + " ORDER BY ts DESC LIMIT ? OFFSET ?"
+	args = append(args, pageSize, offset)
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}
+	}
+	defer rows.Close()
+	type msg struct {
+		Self    bool   `json:"self"`
+		TS      int64  `json:"ts"`
+		Type    string `json:"type"`
+		Content string `json:"content"`
+	}
+	msgs := []msg{}
+	for rows.Next() {
+		var m msg
+		var self int
+		if rows.Scan(&self, &m.TS, &m.Type, &m.Content) == nil {
+			m.Self = self == 1
+			msgs = append(msgs, m)
+		}
+	}
+	pages := int(total / int64(pageSize))
+	if total%int64(pageSize) != 0 {
+		pages++
+	}
+	return map[string]interface{}{
+		"total":  total,
+		"page":   page,
+		"pages":  pages,
+		"msgs":   msgs,
+		"method": method,
+	}
 }
 
 // Export 导出会话

@@ -207,6 +207,17 @@ var dataJSONL = func() string {
 	return filepath.Join(wd, "data", "chat_messages_e.jsonl")
 }()
 
+// trainDepsOK 检测训练/推理依赖（torch/transformers/peft/accelerate）是否可用（P0-6）
+func trainDepsOK() bool {
+	probe := "import importlib.util as u; mods=['torch','transformers','peft','accelerate']; print(all(u.find_spec(m) is not None for m in mods))"
+	c := exec.Command(pyExe, "-c", probe)
+	out, err := c.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "True"
+}
+
 func (j *TrainJob) RunningState() map[string]interface{} {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -237,12 +248,37 @@ func TrainStart(chat, persona, modelPath, out string, epochs, samples int, lr fl
 	}
 	j.mu.Unlock()
 
+	// P0-5：训练数据源不再依赖外部文件——每次训练前从 chats.db 索引导出（对齐 train_cli.py 解析字段）
+	trainData := filepath.Join(dataDir, "chat_messages_e.jsonl")
+	if GDB != nil && GDB.Count() > 0 {
+		n, err := GDB.ExportChatMessages(trainData, 1)
+		if err != nil {
+			return nil, fmtErr("导出训练数据失败: " + err.Error())
+		}
+		if n == 0 {
+			return nil, fmtErr("索引中没有可训练的消息（请先导入聊天记录/解密微信数据库）")
+		}
+		j.mu.Lock()
+		j.Stage = "导出训练数据"
+		j.mu.Unlock()
+	} else {
+		return nil, fmtErr("索引为空：请先在数据页导入聊天记录或解密微信数据库，再开始训练")
+	}
+
+	// P0-6：训练依赖检测（torch/transformers/peft/accelerate）——缺失时给出明确安装命令
+	if !trainDepsOK() {
+		return nil, fmtErr("训练依赖未安装。请先执行（无 GPU 机器用 CPU 版）：\n" +
+			"  <venv>\\Scripts\\python.exe -m pip install -r scripts\\requirements-train-cpu.txt\n" +
+			"  有 NVIDIA GPU 再加：-r scripts\\requirements-train-gpu.txt\n" +
+			"  国内网络可追加 -i https://pypi.tuna.tsinghua.edu.cn/simple")
+	}
+
 	logFile := filepath.Join(dataDir, "train_job.log")
 	os.Remove(logFile)
 
 	args := []string{
 		filepath.Join(wd, "scripts", "train_cli.py"),
-		"--data", dataJSONL,
+		"--data", trainData,
 		"--chat", chat,
 		"--persona", persona,
 		"--model", modelPath,

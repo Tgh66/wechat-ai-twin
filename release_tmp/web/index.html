@@ -114,6 +114,9 @@ mark{background:rgba(255,180,84,.25);color:var(--warn);border-radius:2px;padding
     <h1>💬 微信 AI 数字分身</h1>
     <div class="sub">本地聊天记录 · 统计 · 情感分析 · 数字分身</div>
     <div class="searchbox"><input id="chatSearch" placeholder="🔍 搜索会话…" oninput="filterChats()"></div>
+    <div style="display:flex;align-items:center;gap:6px;margin:0 12px 8px;font-size:12px;color:var(--tx2)">
+      <input type="checkbox" id="showAllChats" onchange="loadChats()"> 显示全部会话（含小会话）
+    </div>
     <div class="chatlist" id="chatList"><div style="color:var(--tx2);font-size:12px;padding:20px;text-align:center" id="chatEmpty">正在加载…</div></div>
     <div class="foot">
       <span id="metaInfo">…</span>
@@ -363,7 +366,9 @@ async function init(){
 }
 async function loadChats(){
   loading(true, '加载会话列表…');
-  const d = await api('chats');
+  // P1-8：默认 ≥30 条/最多 500；勾选"显示全部"则 min=1&limit=0（含小会话）
+  const all = $('showAllChats') && $('showAllChats').checked;
+  const d = all ? await api('chats', {min:1, limit:0}) : await api('chats', {min:30, limit:500});
   chats = d.chats || [];
   renderChats('');
   if(chats.length){ selectChat(chats[0].name); }
@@ -590,19 +595,20 @@ function fmtDays(a,b){
 // ---------------- 记录分析 ----------------
 async function doSearch(){
   const kw = $('kwInput').value.trim();
-  if(!curChat){ alert('请先选择左侧会话再搜索'); return; }
   if(!kw){ $('hitList').innerHTML = '<div style="color:var(--tx2);padding:20px;text-align:center">请输入关键词</div>'; return; }
   loading(true, '搜索“'+kw+'”…');
   try{
-    const d = await api('search', {chat: curChat, q: kw});
+    // FTS5 全文搜索（全局，3 字以上走全文索引，分页）
+    const d = await api('search', {q: kw, page: 1, ps: 50, text: 1});
     loading(false);
     const list = $('hitList');
     if(d.error){ list.innerHTML = '<div style="color:var(--err);padding:20px;text-align:center">搜索失败：'+esc(d.error)+'</div>'; return; }
-    if(!d.hits || !d.hits.length){
-      list.innerHTML = `<div style="color:var(--tx2);padding:20px;text-align:center">在「${esc(curChat)}」中未找到「${esc(kw)}」<br><span style="font-size:11px">（仅检索文本消息；可尝试换个关键词，或到「数据」页重建索引后重试）</span></div>`;
+    const hits = d.msgs || [];
+    if(!hits.length){
+      list.innerHTML = `<div style="color:var(--tx2);padding:20px;text-align:center">未找到「${esc(kw)}」<br><span style="font-size:11px">（FTS 全文索引 ${d.method==='fts'?'已就绪':'构建中，暂用模糊匹配'}；3 字以上关键词效果最佳）</span></div>`;
       return;
     }
-    list.innerHTML = `<div style="color:var(--tx2);font-size:11px;padding-bottom:8px">找到 ${d.count} 条相关记录（最近 ${d.hits.length} 条）</div>` + d.hits.map(h => {
+    list.innerHTML = `<div style="color:var(--tx2);font-size:11px;padding-bottom:8px">找到 ${d.total} 条相关记录（显示前 ${hits.length} 条）</div>` + hits.map(h => {
       const t = new Date(h.TS*1000);
       const txt = String(h.Content).replace(/</g,'&lt;').replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','g'), '<mark>$1</mark>');
       return `<div class="hit"><div class="tm">${t.toLocaleString('zh-CN')}</div><span class="who ${h.Self?'':'o'}">${h.Self?'我':'对方'}</span>${txt}</div>`;

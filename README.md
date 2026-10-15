@@ -176,7 +176,17 @@ wechat-ai-twin/
 
 ## 📜 版本历史
 
-- **v1.1.6（当前）**：
+- **v1.2.0（当前）**：
+  - 🔤 会话统计修正：JSONL 的 `name` 改为**会话显示名**（昵称/群名），`is_self` 布尔标记消息方向——"我"发的消息不再错归到"我"昵称名下
+  - 🎯 is_self 判定修正：以微信 4.0 `SenderName2Id`（real_sender_id→wxid）映射为准（自己消息 id=1 实测确认），None/0 按对方处理并计数
+  - 💻 **无 GPU 完整支持**：训练（train_cli.py）无 GPU 自动回退 CPU fp32（去 4bit 量化/bf16，明确降级提示）；推理（serve_twin.py）设备自适应 + 依赖缺失打印安装命令 + 模型路径校验 + pad/eos 从 tokenizer 读取
+  - 🧹 训练数据源死链修复：新增 `/api/export_train` 从 chats.db 索引自动导出训练数据（训练前自动生成，不再依赖外部文件）
+  - 📦 训练/推理依赖清单：`scripts/requirements-train-cpu.txt`（torch/transformers/peft/accelerate）+ `requirements-train-gpu.txt`（+bitsandbytes）；训练前自动检测缺失并给出安装命令
+  - ⏬ 模型下载完成校验：与 ModelScope 大小比对 + 清理 `.incomplete` 残留，界面可区分下载中/完成/失败
+  - 🔍 FTS5 全文搜索（trigram 中文 3 字子串）+ 分页 + 时间范围；会话列表参数化（显示全部开关，小会话可见）
+  - 🛡 解密健壮性：微信 checkpoint/库占用自动延迟重试（10s×5）；导出前检查磁盘空间
+  - 🚦 `--data` 指定数据目录（多份部署隔离）、`--port` 指定端口；端口占用给出明确提示
+- **v1.1.6**：
   - 🐍 **内置 Python 3.11 运行时**：安装包自带嵌入式 Python（`runtime/` 目录，预装 pip + 全部解密依赖，无需系统安装 Python），**国内无网/无 Python 环境也 100% 可解密**
   - 🔒 环境构建不再假死：离线安装/镜像安装输出全部写入 `data\env_setup.log`，界面同步显示当前安装到哪一步；pip 全程带超时（120s），卡住会自动跳下一个镜像而不是无限挂起
   - 🛡 三层保障：内置运行时（零依赖）→ 系统 Python + 离线 wheels → 国内镜像逐个尝试

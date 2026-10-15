@@ -136,20 +136,31 @@ def train(args, train_path, n):
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-    stage("train", samples=n, epochs=args.epochs, lr=args.lr, model=args.model)
-    log(f"加载基座 {args.model}")
+    cuda = torch.cuda.is_available()
+    device = "cuda" if cuda else "cpu"
+    stage("train", samples=n, epochs=args.epochs, lr=args.lr, model=args.model, device=device)
+    log(f"加载基座 {args.model}（设备 {device}）")
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    bnb = BitsAndBytesConfig(
-        load_in_4bit=True, bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, trust_remote_code=True, quantization_config=bnb,
-        torch_dtype=torch.bfloat16, device_map="cuda")
-    model = prepare_model_for_kbit_training(model)
+    if cuda:
+        # NVIDIA GPU：4bit QLoRA（现有方案）
+        bnb = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, trust_remote_code=True, quantization_config=bnb,
+            torch_dtype=torch.bfloat16, device_map="cuda")
+        model = prepare_model_for_kbit_training(model)
+    else:
+        # 无 GPU：CPU fp32 训练（明确降级，不静默失败）
+        stage("train", note="未检测到 NVIDIA GPU，回退 CPU fp32 训练（速度较慢但可完成；建议小样本/短对话）")
+        log("无 NVIDIA GPU → CPU fp32 训练（去 4bit 量化，bf16 改 fp32，batch=1）")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, trust_remote_code=True,
+            torch_dtype=torch.float32, device_map="cpu", low_cpu_mem_usage=True)
     lora = LoraConfig(
         r=32, lora_alpha=64, lora_dropout=0.05,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
@@ -198,8 +209,9 @@ def train(args, train_path, n):
         warmup_steps=100,
         logging_steps=10,
         save_steps=100000,
-        bf16=True,
-        optim="paged_adamw_8bit",
+        bf16=cuda,
+        fp16=False,
+        optim="paged_adamw_8bit" if cuda else "adamw_torch",
         max_grad_norm=1.0,
         report_to=[],
         dataloader_num_workers=0,
@@ -269,6 +281,23 @@ def serve(args, py, cwd):
         py, serve_script, "--model", args.out, "--port", str(args.port), "--bits", "8",
     ], cwd=cwd, creationflags=subprocess.CREATE_NO_WINDOW)
 
+def find_project_python():
+    """从脚本位置推导项目根（scripts/ 上一级），探测可用的训练/推理 python。
+    兼容三种部署：源码目录 / release zip 解压目录 / 开发机布局。"""
+    here = os.path.dirname(os.path.abspath(__file__))        # .../scripts
+    root = os.path.dirname(here)                              # 项目根
+    cands = [
+        os.path.join(root, "..", "ai-twin", "venv", "Scripts", "python.exe"),
+        os.path.join(root, "..", "ai-twin", "venv", "python.exe"),
+        os.path.join(root, "venv", "Scripts", "python.exe"),
+        os.path.join(root, "venv", "python.exe"),
+        os.path.join(root, "runtime", "python.exe"),          # 内置运行时（解密用，无 torch；仅作兜底探测）
+    ]
+    for c in cands:
+        if os.path.exists(c):
+            return c, root
+    return sys.executable, root
+
 if __name__ == "__main__":
     args = parse_args()
     if args.log:
@@ -281,9 +310,8 @@ if __name__ == "__main__":
         train_path, n = build_dataset(args)
         train(args, train_path, n)
         merge(args)
-        ROOT = r"C:\Users\Administrator\DoubaoWork\chats\2026-10-13\new-chat-1"
-        serve(args, os.path.join(ROOT, "ai-twin", "venv", "Scripts", "python.exe"),
-              os.path.join(ROOT, "wechat-ai-twin"))
+        py, cwd = find_project_python()
+        serve(args, py, cwd)
         stage("done", cost_h=round((time.time() - t0) / 3600, 2))
         log(f"全流程完成，耗时 {(time.time()-t0)/3600:.2f}h")
     except Exception as e:
