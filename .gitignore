@@ -1,0 +1,27 @@
+# 数据与模型（隐私/大文件，不入库）
+data/
+models/
+output/
+venv/
+.venv/
+*.jsonl
+*.safetensors
+chats.db*
+
+# 构建产物
+WeChatTwin.exe
+*.zip
+dist/
+build/
+
+# Go
+go-tools/
+
+# Python
+__pycache__/
+*.pyc
+.idea/
+
+# 系统
+Thumbs.db
+.DS_Store
