@@ -373,10 +373,11 @@ func handleTwin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 探测本地 Python 推理服务（训练/推理环境）
+	client := &http.Client{Timeout: 180 * time.Second}
 	for _, port := range []string{"5000", "8000", "8001", "5001"} {
 		url := "http://127.0.0.1:" + port + "/api/twin_chat"
 		body, _ := json.Marshal(map[string]string{"msg": req.Msg, "chat": req.Chat})
-		resp, err := http.Post(url, "application/json", strings.NewReader(string(body)))
+		resp, err := client.Post(url, "application/json", strings.NewReader(string(body)))
 		if err != nil {
 			continue
 		}
