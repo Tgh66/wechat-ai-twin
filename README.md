@@ -135,22 +135,26 @@ wechat-ai-twin/
 1. 下载 Release 里的 `WeChatTwin-win64.zip`，解压到任意目录
 2. 双击 `WeChatTwin.exe`，浏览器自动打开 `http://127.0.0.1:7860/`
 3. 确认微信已登录运行 → 数据页点「🔓 自动解密微信数据库」
-4. 若提示缺 Python 环境：程序会自动创建 venv 并安装 `wechatauto-replica`（自动换清华镜像），完成后自动继续解密
+4. 若提示缺 Python 环境：程序**自动创建 venv 并安装解密引擎**（优先用 zip 内置的 `wheels/` 离线包，国内无网也能装；失败自动切国内镜像），完成后自动继续解密
 5. 进度条走完 = 聊天记录已全量导入（数据页/记录分析即可使用）
 
 ### 方式 B：提示词一键部署（豆包工作·本地任务）
-把下面整段提示词复制，发给「豆包工作」→ 选择**本地任务**执行，即可自动完成：环境配置 → 全量导出聊天记录 → 启动服务。
+把下面整段提示词复制，发给「豆包工作」→ 选择**本地任务**执行，即可自动完成：拉取仓库 → 配置环境（离线优先）→ 全量导出聊天记录 → 启动服务。
 
 ```text
-【任务：微信 AI 数字分身工作台 · 一键配置环境并导出聊天记录 + 启动服务】
-项目：wechat-ai-twin（Go 全量重构版），源码与 exe 在项目目录。
+【任务：微信 AI 数字分身工作台 · 从 GitHub 拉取仓库并一键配置 + 导出聊天记录 + 启动服务】
+仓库：https://github.com/Tgh66/wechat-ai-twin（Go 全量重构版，zip 自带离线依赖包）
 
 请依次完成以下步骤，全程用简体中文汇报进度，不要省略任何一步：
 
-1. 定位项目目录（默认：解压 WeChatTwin-win64.zip 的目录，或用户指定的路径）
-2. 自动配置 Python 解密环境：
-   - 若项目内 venv\Scripts\python.exe 或同级 ai-twin\venv\Scripts\python.exe 已存在且能 import wechatauto，直接使用；
-   - 否则用系统 Python（py -3 优先）创建 venv，并执行：
+1. 从 GitHub 下载/克隆仓库到本地（推荐下载 Release 最新 zip 解压；或 git clone，国内网络不通可先用镜像加速）
+2. 自动配置 Python 解密环境（优先离线，全程不依赖外网）：
+   - 若项目 venv\Scripts\python.exe 已存在且能 import wechatauto，直接使用；
+   - 否则用系统 Python 创建 venv（优先 py -3.11，与离线包匹配），执行离线安装：
+     <venv>\Scripts\python.exe -m pip install --no-index --find-links wheels\ --no-build-isolation --no-deps wechatauto_replica cryptography cffi pycparser pywin32 winsdk uiautomation zstandard comtypes colorama psutil pyperclip pymsgbox pyautogui pyscreeze pygetwindow pyrect pytweening mouseinfo pillow
+     并先装 wheel 包（构建需要）：
+     <venv>\Scripts\python.exe -m pip install --no-index --find-links wheels\ wheel
+   - 若离线安装失败（Python 版本不是 3.11 等），改用国内镜像在线安装：
      <venv>\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple wechatauto-replica cryptography
    - 验证：<venv>\Scripts\python.exe -c "import wechatauto" 无报错
 3. 确认微信桌面版已登录并保持运行（Weixin.exe / WeChat.exe，用于从进程内存提取数据库密钥）
@@ -172,7 +176,12 @@ wechat-ai-twin/
 
 ## 📜 版本历史
 
-- **v1.1.4（当前）**：
+- **v1.1.5（当前）**：
+  - 🧳 解密环境**离线打包**：wechatauto 解密引擎全套依赖（含 winsdk/pywin32/uiautomation/zstandard 等）预编译包内置在 `wheels/` 目录随 zip 发布，**国内无网/网络差也能自动装好环境**
+  - 🔁 安装策略三层回退：本地离线 wheels → `pip-mirrors.txt` 国内镜像逐个尝试（清华/阿里/腾讯/华为）→ 官方源；镜像列表可自行编辑
+  - 🐍 venv 优先选用 Python 3.11（与离线包匹配），自动跳过 opencv/numpy 等用不到的重型依赖（离线包仅 30MB）
+  - 📄 新增配置文件：`scripts/requirements-decrypt.txt`（依赖清单）、`scripts/pip-mirrors.txt`（镜像列表）
+- **v1.1.4**：
   - 🛠 解密环境**自动配置**：找不到 Python/wechatauto 依赖时自动创建 venv 并安装（失败自动换清华镜像），不再要求用户手工装环境
   - 📖 新增「便捷配置教程」：一段提示词发给豆包工作（本地任务）即可自动完成环境配置 + 全量导出聊天记录 + 启动服务（见下方教程）
   - ⏬ 修复模型下载卡 0%：下载依赖 modelscope 自动安装；下载脚本独立成文件（修复内联脚本语法错误导致的启动即崩）；进度改为真实百分比+速度（总大小经 ModelScope API 探测）

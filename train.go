@@ -394,13 +394,13 @@ func ModelDownload(modelID string) error {
 	j.DLTotal = 0
 	j.mu.Unlock()
 
-	// 确保 modelscope 可用（缺则自动安装）
+	// 确保 modelscope 可用（缺则自动安装，国内镜像列表来自 pip-mirrors.txt）
 	if !pyHasModule(pyExe, "modelscope") {
 		j.mu.Lock()
 		j.Stage = "安装 modelscope（下载工具）…"
 		j.mu.Unlock()
 		installed := false
-		for _, mirror := range []string{"https://pypi.tuna.tsinghua.edu.cn/simple", ""} {
+		for _, mirror := range pipMirrors() {
 			args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check"}
 			if mirror != "" {
 				args = append(args, "-i", mirror)

@@ -911,6 +911,7 @@ func parseTotal(line string) int64 {
 }
 
 // ensureDecryptEnv 确保解密用 Python 环境可用（找不到 venv 时自动创建并安装 wechatauto-replica）
+// 安装顺序：① 本地离线 wheels（wheels/ 目录，国内无网也能装）→ ② 国内镜像（pip-mirrors.txt 逐个）→ ③ 官方源
 func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string, error) {
 	// 1) 已有 venv 直接用
 	if p := os.Getenv("WECHAT_TWIN_PYTHON"); p != "" && fileExists(p) {
@@ -928,11 +929,12 @@ func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string,
 		}
 	}
 
-	// 2) 自动创建 venv（优先 py launcher，其次 python）
+	// 2) 自动创建 venv（优先 py -3.11 以匹配离线 wheels，其次 py -3 / python）
 	progress("配置 Python 环境", 0, "未找到可用 Python 环境，正在自动创建 venv…")
-	venvPy := filepath.Join(wd, "venv", "Scripts", "python.exe")
+	venvDir := filepath.Join(wd, "venv")
+	venvPy := filepath.Join(venvDir, "Scripts", "python.exe")
 	sysPy := ""
-	for _, probe := range []string{"py -3", "python"} {
+	for _, probe := range []string{"py -3.11", "py -3", "python"} {
 		parts := strings.Split(probe, " ")
 		cmd := exec.Command(parts[0], append(parts[1:], "--version")...)
 		if out, err := cmd.CombinedOutput(); err == nil && strings.Contains(strings.ToLower(string(out)), "python") {
@@ -941,10 +943,10 @@ func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string,
 		}
 	}
 	if sysPy == "" {
-		return "", errors.New("未检测到系统 Python。请安装 Python 3.10+（勾选 Add to PATH）后重试，或在环境变量 WECHAT_TWIN_PYTHON 指定已装 wechatauto 的 python.exe")
+		return "", errors.New("未检测到系统 Python。请安装 Python 3.11（勾选 Add to PATH）后重试，或在环境变量 WECHAT_TWIN_PYTHON 指定已装 wechatauto 的 python.exe")
 	}
 	parts := strings.Split(sysPy, " ")
-	cmd := exec.Command(parts[0], append(parts[1:], "-m", "venv", filepath.Join(wd, "venv"))...)
+	cmd := exec.Command(parts[0], append(parts[1:], "-m", "venv", venvDir)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -954,35 +956,104 @@ func ensureDecryptEnv(progress func(stage string, pct int, msg string)) (string,
 		return "", errors.New("venv 创建后未找到 python.exe（请检查系统 Python 完整性）")
 	}
 
-	// 3) 安装/校验 wechatauto-replica + cryptography
+	// 3) 安装/校验 wechatauto-replica（离线 wheels 优先 → 国内镜像 → 官方源）
 	if !pyHasWechatAuto(venvPy) {
-		progress("安装解密依赖", 50, "正在安装 wechatauto-replica（微信 4.0 解密引擎）…")
-		installed := false
-		for _, mirror := range []string{"", "https://pypi.tuna.tsinghua.edu.cn/simple"} {
-			args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check"}
-			if mirror != "" {
-				args = append(args, "-i", mirror)
-			}
-			args = append(args, "wechatauto-replica", "cryptography")
-			c := exec.Command(venvPy, args...)
-			c.Stdout = os.Stdout
-			c.Stderr = os.Stderr
-			if c.Run() == nil && pyHasWechatAuto(venvPy) {
-				installed = true
-				break
+		progress("安装解密依赖", 50, "正在安装 wechatauto-replica（微信 4.0 解密引擎），优先使用本地离线包…")
+		installed := installWechatAutoOffline(venvPy)
+		if !installed {
+			for _, mirror := range pipMirrors() {
+				progress("安装解密依赖", 55, "本地离线包不可用，尝试镜像 "+mirror+" …")
+				if pipInstall(venvPy, mirror, "wechatauto-replica", "cryptography") && pyHasWechatAuto(venvPy) {
+					installed = true
+					break
+				}
 			}
 		}
 		if !installed {
-			return "", errors.New("自动安装解密依赖失败（网络受限？）。可手动执行：<venv>\\Scripts\\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple wechatauto-replica cryptography")
+			return "", errors.New("自动安装解密依赖失败（网络受限或镜像不可达）。可手动执行：<venv>\\Scripts\\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple wechatauto-replica cryptography")
 		}
 	}
 	return venvPy, nil
+}
+
+// installWechatAutoOffline 从 wheels/ 离线安装解密依赖（不依赖网络）
+func installWechatAutoOffline(venvPy string) bool {
+	wheelsDir := filepath.Join(wd, "wheels")
+	if !dirExists(wheelsDir) {
+		return false
+	}
+	// 先装 wheel（sdist 构建需要 bdist_wheel 命令）
+	if !pipOffline(venvPy, wheelsDir, "wheel") {
+		return false
+	}
+	// 装解密引擎 + 运行时依赖（--no-deps 显式列出，避免拉取重型可选依赖 opencv/numpy）
+	pkgs := []string{"wechatauto_replica", "cryptography", "cffi", "pycparser", "pywin32",
+		"winsdk", "uiautomation", "zstandard", "comtypes", "colorama", "psutil", "pyperclip",
+		"pymsgbox", "pyautogui", "pyscreeze", "pygetwindow", "pyrect", "pytweening", "mouseinfo", "pillow"}
+	args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+		"--no-index", "--find-links", wheelsDir, "--no-build-isolation", "--no-deps"}
+	args = append(args, pkgs...)
+	c := exec.Command(venvPy, args...)
+	c.Stdout = nil
+	c.Stderr = nil
+	return c.Run() == nil && pyHasWechatAuto(venvPy)
+}
+
+// pipOffline 离线安装指定包
+func pipOffline(venvPy, wheelsDir, pkg string) bool {
+	c := exec.Command(venvPy, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+		"--no-index", "--find-links", wheelsDir, pkg)
+	c.Stdout = nil
+	c.Stderr = nil
+	return c.Run() == nil
+}
+
+// pipInstall 从指定镜像安装包（-i mirror，空串表示官方源）
+func pipInstall(venvPy, mirror string, pkgs ...string) bool {
+	args := []string{"-m", "pip", "install", "--quiet", "--disable-pip-version-check"}
+	if mirror != "" {
+		args = append(args, "-i", mirror)
+	}
+	args = append(args, pkgs...)
+	c := exec.Command(venvPy, args...)
+	c.Stdout = nil
+	c.Stderr = nil
+	return c.Run() == nil
+}
+
+// pipMirrors 读取 pip-mirrors.txt 镜像列表（读不到时回退内置列表）
+func pipMirrors() []string {
+	lines, err := os.ReadFile(filepath.Join(wd, "scripts", "pip-mirrors.txt"))
+	if err == nil {
+		var out []string
+		for _, l := range strings.Split(string(lines), "\n") {
+			l = strings.TrimSpace(l)
+			if l != "" && !strings.HasPrefix(l, "#") {
+				out = append(out, l)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []string{
+		"https://pypi.tuna.tsinghua.edu.cn/simple",
+		"https://mirrors.aliyun.com/pypi/simple/",
+		"https://mirrors.cloud.tencent.com/pypi/simple/",
+		"https://mirrors.huaweicloud.com/repository/pypi/simple/",
+		"https://pypi.org/simple",
+	}
 }
 
 // pyHasWechatAuto 检查指定 python 能否 import wechatauto
 func pyHasWechatAuto(py string) bool {
 	c := exec.Command(py, "-c", "import wechatauto")
 	return c.Run() == nil
+}
+
+func dirExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 func fileExists(p string) bool {
